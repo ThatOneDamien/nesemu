@@ -1,0 +1,37 @@
+pub typedef InitFlags = uint;
+pub typedef Window = void;
+pub typedef Renderer = void;
+pub typedef WindowFlags = ulong;
+pub typedef SDLString = *[*]const char;
+
+pub #const INIT_VIDEO: InitFlags = 0x00000020;
+pub #const EVENT_QUIT: uint = 0x100;
+
+pub union Event
+{
+    type: uint,
+    padding: [128]ubyte
+}
+
+@link_name("SDL_Init")
+extern pub fn Init(flags: InitFlags) bool;
+@link_name("SDL_Quit")
+extern pub fn Quit() void;
+@link_name("SDL_GetError")
+extern pub fn GetError() SDLString;
+@link_name("SDL_CreateWindow")
+extern pub fn CreateWindow(title: SDLString, w: int, h: int, flags: WindowFlags) ?*Window;
+@link_name("SDL_DestroyWindow")
+extern pub fn DestroyWindow(window: *Window) void;
+@link_name("SDL_CreateRenderer")
+extern pub fn CreateRenderer(window: *Window, name: ?SDLString) ?*Renderer;
+@link_name("SDL_SetRenderDrawColor")
+extern pub fn SetRenderDrawColor(renderer: *Renderer, r: ubyte, g: ubyte, b: ubyte, a: ubyte) bool;
+@link_name("SDL_RenderClear")
+extern pub fn RenderClear(renderer: *Renderer) bool;
+@link_name("SDL_RenderPresent")
+extern pub fn RenderPresent(renderer: *Renderer) bool;
+@link_name("SDL_Delay")
+extern pub fn Delay(ms: uint) void;
+@link_name("SDL_PollEvent")
+extern pub fn PollEvent(event: *Event) bool;

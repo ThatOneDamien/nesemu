@@ -1,0 +1,12 @@
+pub typedef CString = *[*]const char;
+pub struct ROMData
+{
+    nes_constant: uint,
+    prg_rom_size: ubyte,
+    chr_rom_size: ubyte,
+    flags6: ubyte,
+    flags7: ubyte,
+    flags8: ubyte,
+    flags9: ubyte,
+    flags10: ubyte,
+}

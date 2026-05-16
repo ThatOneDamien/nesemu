@@ -1,0 +1,104 @@
+import types::*;
+
+struct Opcode
+{
+    instr: Instr,
+    addr_mode: AddrMode,
+}
+
+struct CPU
+{
+    a: ubyte,
+    x: ubyte,
+    y: ubyte,
+    sp: ubyte,
+    pc: ushort,
+    status: ubyte,
+}
+
+var cpu: CPU;
+const opcodes: [0x100]Opcode = [
+    0x00: { instr: Instr.BRK, addr_mode: AddrMode.Implied },
+];
+
+pub fn step() void
+{
+
+}
+
+enum Instr : ubyte
+{
+    NOP,
+    ADC,
+    AND,
+    ASL,
+    BCC,
+    BCS,
+    BEQ,
+    BIT,
+    BMI,
+    BNE,
+    BPL,
+    BRK,
+    BVC,
+    BVS,
+    CLC,
+    CLD,
+    CLI,
+    CLV,
+    CMP,
+    CPX,
+    CPY,
+    DEC,
+    DEX,
+    DEY,
+    EOR,
+    INC,
+    INX,
+    INY,
+    JMP,
+    JSR,
+    LDA,
+    LDX,
+    LDY,
+    LSR,
+    ORA,
+    PHA,
+    PHP,
+    PLA,
+    PLP,
+    ROL,
+    ROR,
+    RTI,
+    RTS,
+    SBC,
+    SEC,
+    SED,
+    SEI,
+    STA,
+    STX,
+    STY,
+    TAX,
+    TAY,
+    TSX,
+    TXA,
+    TXS,
+    TYA
+}
+
+enum AddrMode : ubyte
+{
+    Implied,
+    Accumulator,
+    Immediate,
+    ZeroPage,
+    ZeroPageX,
+    ZeroPageY,
+    Absolute,
+    AbsoluteX,
+    AbsoluteY,
+    Relative,
+    Indirect,
+    IndirectX,
+    IndirectY,
+}
