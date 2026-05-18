@@ -1,9 +1,15 @@
 import types::*;
+import io;
+import bus;
+import todo;
 
 struct Opcode
 {
     instr: Instr,
     addr_mode: AddrMode,
+    cycles: ubyte,
+    bytes: ubyte,
+    page_cross_penalty: bool,
 }
 
 struct CPU
@@ -14,20 +20,87 @@ struct CPU
     sp: ubyte,
     pc: ushort,
     status: ubyte,
+    cycles: ulong,
+}
+
+struct Operand
+{
+    mode: AddrMode,
+    addr: ushort,
+    value: ubyte,
+    page_crossed: bool,
 }
 
 var cpu: CPU;
-const opcodes: [0x100]Opcode = [
-    0x00: { instr: Instr.BRK, addr_mode: AddrMode.Implied },
-];
 
 pub fn step() void
 {
+    const next_instr = bus::read(cpu.pc);
+    const opcode = opcodes[next_instr];
+    io::printf("(CPU) [0x%.2hhX] OP:\"%s\" AddrMode:%-12s  PC:0x%.4hX   A:0x%.2hhX   X:0x%.2hhX   Y:0x%.2hhX\n", 
+               next_instr, 
+               instr_to_str[opcode.instr], 
+               addr_mode_to_str[opcode.addr_mode],
+               cpu.pc, cpu.a, cpu.x, cpu.y);
 
+    cpu.pc++;
+    resolve_operand(opcode.addr_mode);
+
+    cpu.cycles += opcode.cycles;
+}
+
+pub fn cycle(count: uint) void
+{
+    cpu.cycles += count;
+}
+
+pub fn set_pc(pc: ushort) void
+{
+    cpu.pc = pc;
+}
+
+fn resolve_operand(mode: AddrMode) Operand
+{
+    var operand = Operand{ mode: mode }; 
+    switch mode {
+    case AddrMode.Implied:
+    case AddrMode.Accumulator:
+        break;
+    case AddrMode.Immediate:
+        operand.addr = cpu.pc;
+        operand.value = bus::read(cpu.pc);
+        cpu.pc++;
+    case AddrMode.ZeroPage:
+        operand.addr = bus::read(cpu.pc);
+        cpu.pc++;
+        operand.value = bus::read(operand.addr);
+    case AddrMode.ZeroPageX:
+    case AddrMode.ZeroPageY:
+        todo(null);
+    case AddrMode.Absolute:
+        operand.addr = bus::read16(cpu.pc); 
+        cpu.pc += 2;
+        operand.value = bus::read(operand.addr);
+    case AddrMode.AbsoluteX:
+    case AddrMode.AbsoluteY:
+        todo(null);
+    case AddrMode.Relative:
+        const offset = cast<byte>(bus::read(cpu.pc));
+        cpu.pc++;
+        operand.addr = cpu.pc + cast<ushort>(cast<short>(offset));
+    case AddrMode.Indirect:
+    case AddrMode.IndirectX:
+    case AddrMode.IndirectY:
+        todo(null);
+    default:
+        io::printf("Bad addressing mode.\n");
+    }
+    return operand;
 }
 
 enum Instr : ubyte
 {
+    // Official
     NOP,
     ADC,
     AND,
@@ -83,11 +156,33 @@ enum Instr : ubyte
     TSX,
     TXA,
     TXS,
-    TYA
+    TYA,
+
+    // Unofficial / Illegal
+    ALR,
+    ANC,
+    ARR,
+    AXS,
+    DCP,
+    ISC,
+    LAS,
+    LAX,
+    RLA,
+    RRA,
+    SAX,
+    SHX,
+    SHY,
+    SLO,
+    SRE,
+    TAS,
+    XAA,
+    AHX,
+    STP,
 }
 
 enum AddrMode : ubyte
 {
+    None,
     Implied,
     Accumulator,
     Immediate,
@@ -102,3 +197,388 @@ enum AddrMode : ubyte
     IndirectX,
     IndirectY,
 }
+
+const instr_to_str: [#type_max(Instr) - #type_min(Instr) + 1]CString = [
+    Instr.NOP: "NOP",
+    Instr.ADC: "ADC",
+    Instr.AND: "AND",
+    Instr.ASL: "ASL",
+    Instr.BCC: "BCC",
+    Instr.BCS: "BCS",
+    Instr.BEQ: "BEQ",
+    Instr.BIT: "BIT",
+    Instr.BMI: "BMI",
+    Instr.BNE: "BNE",
+    Instr.BPL: "BPL",
+    Instr.BRK: "BRK",
+    Instr.BVC: "BVC",
+    Instr.BVS: "BVS",
+    Instr.CLC: "CLC",
+    Instr.CLD: "CLD",
+    Instr.CLI: "CLI",
+    Instr.CLV: "CLV",
+    Instr.CMP: "CMP",
+    Instr.CPX: "CPX",
+    Instr.CPY: "CPY",
+    Instr.DEC: "DEC",
+    Instr.DEX: "DEX",
+    Instr.DEY: "DEY",
+    Instr.EOR: "EOR",
+    Instr.INC: "INC",
+    Instr.INX: "INX",
+    Instr.INY: "INY",
+    Instr.JMP: "JMP",
+    Instr.JSR: "JSR",
+    Instr.LDA: "LDA",
+    Instr.LDX: "LDX",
+    Instr.LDY: "LDY",
+    Instr.LSR: "LSR",
+    Instr.ORA: "ORA",
+    Instr.PHA: "PHA",
+    Instr.PHP: "PHP",
+    Instr.PLA: "PLA",
+    Instr.PLP: "PLP",
+    Instr.ROL: "ROL",
+    Instr.ROR: "ROR",
+    Instr.RTI: "RTI",
+    Instr.RTS: "RTS",
+    Instr.SBC: "SBC",
+    Instr.SEC: "SEC",
+    Instr.SED: "SED",
+    Instr.SEI: "SEI",
+    Instr.STA: "STA",
+    Instr.STX: "STX",
+    Instr.STY: "STY",
+    Instr.TAX: "TAX",
+    Instr.TAY: "TAY",
+    Instr.TSX: "TSX",
+    Instr.TXA: "TXA",
+    Instr.TXS: "TXS",
+    Instr.TYA: "TYA",
+    Instr.ALR: "ALR",
+    Instr.ANC: "ANC",
+    Instr.ARR: "ARR",
+    Instr.AXS: "AXS",
+    Instr.DCP: "DCP",
+    Instr.ISC: "ISC",
+    Instr.LAS: "LAS",
+    Instr.LAX: "LAX",
+    Instr.RLA: "RLA",
+    Instr.RRA: "RRA",
+    Instr.SAX: "SAX",
+    Instr.SHX: "SHX",
+    Instr.SHY: "SHY",
+    Instr.SLO: "SLO",
+    Instr.SRE: "SRE",
+    Instr.TAS: "TAS",
+    Instr.XAA: "XAA",
+    Instr.AHX: "AHX",
+    Instr.STP: "STP",
+];
+
+const addr_mode_to_str: [#type_max(AddrMode) - #type_min(AddrMode) + 1]CString = [
+    AddrMode.None:        "None",
+    AddrMode.Implied:     "Implied",
+    AddrMode.Accumulator: "Accumulator",
+    AddrMode.Immediate:   "Immediate",
+    AddrMode.ZeroPage:    "ZeroPage",
+    AddrMode.ZeroPageX:   "ZeroPageX",
+    AddrMode.ZeroPageY:   "ZeroPageY",
+    AddrMode.Absolute:    "Absolute",
+    AddrMode.AbsoluteX:   "AbsoluteX",
+    AddrMode.AbsoluteY:   "AbsoluteY",
+    AddrMode.Relative:    "Relative",
+    AddrMode.Indirect:    "Indirect",
+    AddrMode.IndirectX:   "IndirectX",
+    AddrMode.IndirectY:   "IndirectY",
+];
+
+const opcodes: [0x100]Opcode = [
+    0x00: Opcode{ instr: Instr.BRK, addr_mode: AddrMode.Implied,    cycles: 7, bytes: 1, page_cross_penalty: false },
+    0x01: Opcode{ instr: Instr.ORA, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x02: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x03: Opcode{ instr: Instr.SLO, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x04: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x05: Opcode{ instr: Instr.ORA, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x06: Opcode{ instr: Instr.ASL, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x07: Opcode{ instr: Instr.SLO, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+
+    0x08: Opcode{ instr: Instr.PHP, addr_mode: AddrMode.Implied,    cycles: 3, bytes: 1, page_cross_penalty: false },
+    0x09: Opcode{ instr: Instr.ORA, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x0A: Opcode{ instr: Instr.ASL, addr_mode: AddrMode.Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x0B: Opcode{ instr: Instr.ANC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x0C: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x0D: Opcode{ instr: Instr.ORA, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x0E: Opcode{ instr: Instr.ASL, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x0F: Opcode{ instr: Instr.SLO, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+
+    0x10: Opcode{ instr: Instr.BPL, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x11: Opcode{ instr: Instr.ORA, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0x12: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x13: Opcode{ instr: Instr.SLO, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x14: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x15: Opcode{ instr: Instr.ORA, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x16: Opcode{ instr: Instr.ASL, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x17: Opcode{ instr: Instr.SLO, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+
+    0x18: Opcode{ instr: Instr.CLC, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x19: Opcode{ instr: Instr.ORA, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x1A: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x1B: Opcode{ instr: Instr.SLO, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x1C: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x1D: Opcode{ instr: Instr.ORA, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x1E: Opcode{ instr: Instr.ASL, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x1F: Opcode{ instr: Instr.SLO, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+
+    0x20: Opcode{ instr: Instr.JSR, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x21: Opcode{ instr: Instr.AND, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x22: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x23: Opcode{ instr: Instr.RLA, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x24: Opcode{ instr: Instr.BIT, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x25: Opcode{ instr: Instr.AND, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x26: Opcode{ instr: Instr.ROL, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x27: Opcode{ instr: Instr.RLA, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+
+    0x28: Opcode{ instr: Instr.PLP, addr_mode: AddrMode.Implied,    cycles: 4, bytes: 1, page_cross_penalty: false },
+    0x29: Opcode{ instr: Instr.AND, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x2A: Opcode{ instr: Instr.ROL, addr_mode: AddrMode.Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x2B: Opcode{ instr: Instr.ANC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x2C: Opcode{ instr: Instr.BIT, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x2D: Opcode{ instr: Instr.AND, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x2E: Opcode{ instr: Instr.ROL, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x2F: Opcode{ instr: Instr.RLA, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+
+    0x30: Opcode{ instr: Instr.BMI, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x31: Opcode{ instr: Instr.AND, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0x32: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x33: Opcode{ instr: Instr.RLA, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x34: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x35: Opcode{ instr: Instr.AND, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x36: Opcode{ instr: Instr.ROL, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x37: Opcode{ instr: Instr.RLA, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+
+    0x38: Opcode{ instr: Instr.SEC, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x39: Opcode{ instr: Instr.AND, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x3A: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x3B: Opcode{ instr: Instr.RLA, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x3C: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x3D: Opcode{ instr: Instr.AND, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x3E: Opcode{ instr: Instr.ROL, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x3F: Opcode{ instr: Instr.RLA, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+
+    0x40: Opcode{ instr: Instr.RTI, addr_mode: AddrMode.Implied,    cycles: 6, bytes: 1, page_cross_penalty: false },
+    0x41: Opcode{ instr: Instr.EOR, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x42: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x43: Opcode{ instr: Instr.SRE, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x44: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x45: Opcode{ instr: Instr.EOR, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x46: Opcode{ instr: Instr.LSR, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x47: Opcode{ instr: Instr.SRE, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+
+    0x48: Opcode{ instr: Instr.PHA, addr_mode: AddrMode.Implied,    cycles: 3, bytes: 1, page_cross_penalty: false },
+    0x49: Opcode{ instr: Instr.EOR, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x4A: Opcode{ instr: Instr.LSR, addr_mode: AddrMode.Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x4B: Opcode{ instr: Instr.ALR, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x4C: Opcode{ instr: Instr.JMP, addr_mode: AddrMode.Absolute,   cycles: 3, bytes: 3, page_cross_penalty: false },
+    0x4D: Opcode{ instr: Instr.EOR, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x4E: Opcode{ instr: Instr.LSR, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x4F: Opcode{ instr: Instr.SRE, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+
+    0x50: Opcode{ instr: Instr.BVC, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x51: Opcode{ instr: Instr.EOR, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0x52: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x53: Opcode{ instr: Instr.SRE, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x54: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x55: Opcode{ instr: Instr.EOR, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x56: Opcode{ instr: Instr.LSR, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x57: Opcode{ instr: Instr.SRE, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+
+    0x58: Opcode{ instr: Instr.CLI, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x59: Opcode{ instr: Instr.EOR, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x5A: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x5B: Opcode{ instr: Instr.SRE, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x5C: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x5D: Opcode{ instr: Instr.EOR, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x5E: Opcode{ instr: Instr.LSR, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x5F: Opcode{ instr: Instr.SRE, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+
+    0x60: Opcode{ instr: Instr.RTS, addr_mode: AddrMode.Implied,    cycles: 6, bytes: 1, page_cross_penalty: false },
+    0x61: Opcode{ instr: Instr.ADC, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x62: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x63: Opcode{ instr: Instr.RRA, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x64: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x65: Opcode{ instr: Instr.ADC, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x66: Opcode{ instr: Instr.ROR, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x67: Opcode{ instr: Instr.RRA, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+
+    0x68: Opcode{ instr: Instr.PLA, addr_mode: AddrMode.Implied,    cycles: 4, bytes: 1, page_cross_penalty: false },
+    0x69: Opcode{ instr: Instr.ADC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x6A: Opcode{ instr: Instr.ROR, addr_mode: AddrMode.Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x6B: Opcode{ instr: Instr.ARR, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x6C: Opcode{ instr: Instr.JMP, addr_mode: AddrMode.Indirect,   cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x6D: Opcode{ instr: Instr.ADC, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x6E: Opcode{ instr: Instr.ROR, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x6F: Opcode{ instr: Instr.RRA, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+
+    0x70: Opcode{ instr: Instr.BVS, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x71: Opcode{ instr: Instr.ADC, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0x72: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x73: Opcode{ instr: Instr.RRA, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x74: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x75: Opcode{ instr: Instr.ADC, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x76: Opcode{ instr: Instr.ROR, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x77: Opcode{ instr: Instr.RRA, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+
+    0x78: Opcode{ instr: Instr.SEI, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x79: Opcode{ instr: Instr.ADC, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x7A: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x7B: Opcode{ instr: Instr.RRA, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x7C: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x7D: Opcode{ instr: Instr.ADC, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x7E: Opcode{ instr: Instr.ROR, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x7F: Opcode{ instr: Instr.RRA, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+
+    0x80: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x81: Opcode{ instr: Instr.STA, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x82: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x83: Opcode{ instr: Instr.SAX, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x84: Opcode{ instr: Instr.STY, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x85: Opcode{ instr: Instr.STA, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x86: Opcode{ instr: Instr.STX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x87: Opcode{ instr: Instr.SAX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+
+    0x88: Opcode{ instr: Instr.DEY, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x89: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x8A: Opcode{ instr: Instr.TXA, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x8B: Opcode{ instr: Instr.XAA, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x8C: Opcode{ instr: Instr.STY, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x8D: Opcode{ instr: Instr.STA, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x8E: Opcode{ instr: Instr.STX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x8F: Opcode{ instr: Instr.SAX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+
+    0x90: Opcode{ instr: Instr.BCC, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x91: Opcode{ instr: Instr.STA, addr_mode: AddrMode.IndirectY,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x92: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x93: Opcode{ instr: Instr.AHX, addr_mode: AddrMode.IndirectY,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x94: Opcode{ instr: Instr.STY, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x95: Opcode{ instr: Instr.STA, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x96: Opcode{ instr: Instr.STX, addr_mode: AddrMode.ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x97: Opcode{ instr: Instr.SAX, addr_mode: AddrMode.ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
+
+    0x98: Opcode{ instr: Instr.TYA, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x99: Opcode{ instr: Instr.STA, addr_mode: AddrMode.AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9A: Opcode{ instr: Instr.TXS, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x9B: Opcode{ instr: Instr.TAS, addr_mode: AddrMode.AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9C: Opcode{ instr: Instr.SHY, addr_mode: AddrMode.AbsoluteX,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9D: Opcode{ instr: Instr.STA, addr_mode: AddrMode.AbsoluteX,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9E: Opcode{ instr: Instr.SHX, addr_mode: AddrMode.AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9F: Opcode{ instr: Instr.AHX, addr_mode: AddrMode.AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
+
+    0xA0: Opcode{ instr: Instr.LDY, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xA1: Opcode{ instr: Instr.LDA, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xA2: Opcode{ instr: Instr.LDX, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xA3: Opcode{ instr: Instr.LAX, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xA4: Opcode{ instr: Instr.LDY, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xA5: Opcode{ instr: Instr.LDA, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xA6: Opcode{ instr: Instr.LDX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xA7: Opcode{ instr: Instr.LAX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+
+    0xA8: Opcode{ instr: Instr.TAY, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xA9: Opcode{ instr: Instr.LDA, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xAA: Opcode{ instr: Instr.TAX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xAB: Opcode{ instr: Instr.LAX, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xAC: Opcode{ instr: Instr.LDY, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xAD: Opcode{ instr: Instr.LDA, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xAE: Opcode{ instr: Instr.LDX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xAF: Opcode{ instr: Instr.LAX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+
+    0xB0: Opcode{ instr: Instr.BCS, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0xB1: Opcode{ instr: Instr.LDA, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0xB2: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0xB3: Opcode{ instr: Instr.LAX, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0xB4: Opcode{ instr: Instr.LDY, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xB5: Opcode{ instr: Instr.LDA, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xB6: Opcode{ instr: Instr.LDX, addr_mode: AddrMode.ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xB7: Opcode{ instr: Instr.LAX, addr_mode: AddrMode.ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
+
+    0xB8: Opcode{ instr: Instr.CLV, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xB9: Opcode{ instr: Instr.LDA, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBA: Opcode{ instr: Instr.TSX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xBB: Opcode{ instr: Instr.LAS, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBC: Opcode{ instr: Instr.LDY, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBD: Opcode{ instr: Instr.LDA, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBE: Opcode{ instr: Instr.LDX, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBF: Opcode{ instr: Instr.LAX, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+
+    0xC0: Opcode{ instr: Instr.CPY, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xC1: Opcode{ instr: Instr.CMP, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xC2: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xC3: Opcode{ instr: Instr.DCP, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xC4: Opcode{ instr: Instr.CPY, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xC5: Opcode{ instr: Instr.CMP, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xC6: Opcode{ instr: Instr.DEC, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0xC7: Opcode{ instr: Instr.DCP, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+
+    0xC8: Opcode{ instr: Instr.INY, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xC9: Opcode{ instr: Instr.CMP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xCA: Opcode{ instr: Instr.DEX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xCB: Opcode{ instr: Instr.AXS, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xCC: Opcode{ instr: Instr.CPY, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xCD: Opcode{ instr: Instr.CMP, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xCE: Opcode{ instr: Instr.DEC, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0xCF: Opcode{ instr: Instr.DCP, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+
+    0xD0: Opcode{ instr: Instr.BNE, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0xD1: Opcode{ instr: Instr.CMP, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0xD2: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0xD3: Opcode{ instr: Instr.DCP, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xD4: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xD5: Opcode{ instr: Instr.CMP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xD6: Opcode{ instr: Instr.DEC, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xD7: Opcode{ instr: Instr.DCP, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+
+    0xD8: Opcode{ instr: Instr.CLD, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xD9: Opcode{ instr: Instr.CMP, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xDA: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xDB: Opcode{ instr: Instr.DCP, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xDC: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xDD: Opcode{ instr: Instr.CMP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xDE: Opcode{ instr: Instr.DEC, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xDF: Opcode{ instr: Instr.DCP, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+
+    0xE0: Opcode{ instr: Instr.CPX, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xE1: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xE2: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xE3: Opcode{ instr: Instr.ISC, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xE4: Opcode{ instr: Instr.CPX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xE5: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xE6: Opcode{ instr: Instr.INC, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0xE7: Opcode{ instr: Instr.ISC, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+
+    0xE8: Opcode{ instr: Instr.INX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xE9: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xEA: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xEB: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xEC: Opcode{ instr: Instr.CPX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xED: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xEE: Opcode{ instr: Instr.INC, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0xEF: Opcode{ instr: Instr.ISC, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+
+    0xF0: Opcode{ instr: Instr.BEQ, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0xF1: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0xF2: Opcode{ instr: Instr.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0xF3: Opcode{ instr: Instr.ISC, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xF4: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xF5: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xF6: Opcode{ instr: Instr.INC, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xF7: Opcode{ instr: Instr.ISC, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+
+    0xF8: Opcode{ instr: Instr.SED, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xF9: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xFA: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xFB: Opcode{ instr: Instr.ISC, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xFC: Opcode{ instr: Instr.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xFD: Opcode{ instr: Instr.SBC, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xFE: Opcode{ instr: Instr.INC, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xFF: Opcode{ instr: Instr.ISC, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+];

@@ -1,0 +1,9 @@
+import types::*;
+
+extern pub fn fprintf(fp: *void, fmt: CString, ...) void;
+extern pub fn printf(fmt: CString, ...) void;
+extern pub fn open(path: CString, flags: int, ...) int;
+extern pub fn close(fd: int) int;
+extern pub fn read(fd: int, buf: *void, count: usize) isize;
+extern pub fn lseek(fd: int, offset: isize, whence: int) isize;
+extern pub fn memcpy(dst: *void, src: *const void, size: usize) void;
