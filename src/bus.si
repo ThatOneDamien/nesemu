@@ -38,13 +38,11 @@ pub fn load_program() void
 
 pub fn read(addr: ushort) ubyte
 {
-    cpu::cycle(1);
     return ram[addr];
 }
 
 pub fn read16(addr: ushort) ushort
 {
-    cpu::cycle(2);
     return *cast<*ushort>(&ram[addr]);
 }
 
