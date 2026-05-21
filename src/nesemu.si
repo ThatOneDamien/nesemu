@@ -1,19 +1,23 @@
 pub mod sdl;
 pub mod cpu;
-pub mod types;
 pub mod io;
 pub mod bus;
+pub mod rom;
 
-import types::*;
+import rom::NesROM;
+import cpu::CPU;
 
-extern fn malloc(size: usize) *void;
+pub typedef CString = *[*]const char;
+pub extern fn malloc(size: usize) *void;
 
-extern const stderr: *void;
+pub var context: EmuContext;
 
-#const O_RDONLY: int = 0;
-#const SEEK_SET: int = 0;
-#const SEEK_END: int = 2;
-#const NES_CONSTANT: uint = 0x1A53454E;
+pub struct EmuContext
+{
+    cpu: CPU,
+    ram: [0x10000]ubyte,
+    rom: ?NesROM,
+}
 
 pub fn todo(name: ?CString) void
 {
@@ -27,28 +31,9 @@ fn main(args: []CString) int
         io::printf("Usage: %s [ROM path]\n", args[0]);
         return 0;
     }
-    //
-    // const fd = io::open(args[1], O_RDONLY);
-    // if fd < 0 {
-    //     io::fprintf(stderr, "Failed to open file %s\n", args[1]);
-    //     return 1;
-    // }
-    //
-    // const sz = cast<usize>(io::lseek(fd, 0, SEEK_END));
-    // io::printf("size of file: %ld\n", sz);
-    // io::lseek(fd, 0, SEEK_SET);
-    //
-    // const buf = cast<*ROMData>(malloc(sz));
-    // io::read(fd, buf, sz);
-    // if buf.nes_constant == NES_CONSTANT {
-    //     io::printf("Successful! %u %u\n", cast<uint>(buf.prg_rom_size) * 0x4000, cast<uint>(buf.chr_rom_size) * 0x2000);
-    // }
+    context.rom = NesROM.from_file(args[1]);
+    if context.rom == null { return 1; }
 
-    // io::close(fd);
-    bus::load_program();
-    for _a in 0..16 {
-        cpu::step();
-    }
     // if !start_window_loop() {
     //     return 1;
     // }

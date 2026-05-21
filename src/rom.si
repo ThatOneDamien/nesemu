@@ -1,0 +1,50 @@
+import CString;
+import io;
+import malloc;
+
+#const NES_CONSTANT: uint = 0x1A53454E;
+pub struct ROMHeader
+{
+    nes_constant: uint,
+    prg_rom_size: ubyte,
+    chr_rom_size: ubyte,
+    flags6: ubyte,
+    flags7: ubyte,
+    flags8: ubyte,
+    flags9: ubyte,
+    flags10: ubyte,
+}
+
+pub struct NesROM
+{
+    header: *ROMHeader,
+    prg_rom: []ubyte,
+    chr_rom: []ubyte,
+}
+
+pub fn NesROM.from_file(file_path: CString) ?NesROM
+{
+    const fd = io::open(file_path, io::O_RDONLY);
+    if fd < 0 {
+        io::fprintf(io::stderr, "Failed to open file %s\n", file_path);
+        return null;
+    }
+
+    const sz = cast<usize>(io::lseek(fd, 0, io::SEEK_END));
+    io::lseek(fd, 0, io::SEEK_SET);
+
+    const buf = cast<*ROMHeader>(malloc(sz));
+    io::read(fd, buf, sz);
+    const prg_size = cast<uint>(buf.prg_rom_size) * 0x4000;
+    const chr_size = cast<uint>(buf.chr_rom_size) * 0x2000;
+    if buf.nes_constant == NES_CONSTANT {
+        io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
+    }
+
+    io::close(fd);
+    return NesROM {
+        header: buf,
+        prg_rom: cast<*[*]ubyte>(buf + 1)[0..prg_size],
+        chr_rom: cast<*[*]ubyte>(buf + 1)[prg_size..prg_size + chr_size],
+    };
+}

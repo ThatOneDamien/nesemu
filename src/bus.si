@@ -1,52 +1,30 @@
 import cpu;
 import io;
-const test_program: [*]ubyte = [
-    0xA9, 0x05,       // LDA #$05        ; Load immediate 0x05 into A
-    0x8D, 0x00, 0x02, // STA $0200       ; Store A into memory $0200
-
-    0xA2, 0x03,       // LDX #$03        ; Load immediate 0x03 into X
-    0x8E, 0x01, 0x02, // STX $0201       ; Store X into $0201
-
-    0xA0, 0x0A,       // LDY #$0A        ; Load immediate 0x0A into Y
-    0x8C, 0x02, 0x02, // STY $0202       ; Store Y into $0202
-
-    0xE8,             // INX              ; X = X + 1
-    0x8E, 0x03, 0x02, // STX $0203       ; Store X into $0203
-
-    0xC8,             // INY              ; Y = Y + 1
-    0x8C, 0x04, 0x02, // STY $0204       ; Store Y into $0204
-
-    0xA9, 0x00,       // LDA #$00        ; Load 0 into A
-    0xF0, 0x02,       // BEQ +2          ; Branch forward 2 bytes if Z flag set
-                      // (skips next LDA if A == 0)
-
-    0xA9, 0xFF,       // LDA #$FF        ; Skipped if branch taken
-
-    0xA9, 0x42,       // LDA #$42        ; Load 0x42 into A
-    0x8D, 0x05, 0x02, // STA $0205       ; Store A into $0205
-
-    0x4C, 0x1D, 0x80  // JMP $801D       ; Jump back to INY loop (infinite loop)
-];
-
-var ram: [0x10000]ubyte;
-
-pub fn load_program() void
-{
-    io::memcpy(&ram[0x8000], &test_program, #sizeof(#typeof(test_program)));
-    cpu::set_pc(0x8000);
-}
+import context;
+import main;
 
 pub fn read(addr: ushort) ubyte
 {
-    return ram[addr];
+    if addr >= 0x8000 {
+    
+        const rom_addr = addr - 0x8000;
+
+        // mirror if only 16KB PRG
+        if context.rom!.prg_rom.len == 0x4000 {
+            return context.rom!.prg_rom[rom_addr & 0x3FFF];
+        }
+
+        return context.rom!.prg_rom[rom_addr];
+    }
+    return context.ram[addr];
 }
 
 pub fn read16(addr: ushort) ushort
 {
-    return *cast<*ushort>(&ram[addr]);
+    return *cast<*ushort>(&context.ram[addr]);
 }
 
 pub fn write(addr: ushort, value: ubyte) void
 {
-    ram[addr] = value;
+    context.ram[addr] = value;
 }

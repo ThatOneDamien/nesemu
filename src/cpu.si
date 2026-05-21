@@ -1,7 +1,8 @@
-import types::*;
+import CString;
 import io;
 import bus;
 import todo;
+import context;
 
 struct Instr 
 {
@@ -12,7 +13,7 @@ struct Instr
     page_cross_penalty: bool,
 }
 
-struct CPU
+pub struct CPU
 {
     a: ubyte,
     x: ubyte,
@@ -23,13 +24,12 @@ struct CPU
     cycles: ulong,
 }
 
-struct StatusReg
+pub struct StatusReg
 {
     c: bool,
     z: bool,
     i: bool,
     d: bool,
-    b: bool,
     v: bool,
     n: bool,
 }
@@ -48,23 +48,22 @@ fn Operand.loadValue(op: *Operand) ubyte
     return op.value!;
 }
 
-var cpu: CPU;
+#const cpu = &context.cpu;
 
 pub fn step() void
 {
     const opcode = bus::read(cpu.pc);
     const instr = opcodes[opcode];
-    io::printf("(CPU) [0x%.2hhX] OP:\"%s\"  PC:0x%.4hX  A:0x%.2hhX  X:0x%.2hhX  Y:0x%.2hhX  CZIDBVN:%1u%1u%1u%1u%1u%1u%1u  AddrMode:%-12s\n", 
+    io::printf("(CPU) [0x%.2hhX] OP:\"%s\"  PC:0x%.4hX  A:0x%.2hhX  X:0x%.2hhX  Y:0x%.2hhX  CZIDVN:%1u%1u%1u%1u%1u%1u  AddrMode:%-12s\n", 
                opcode, 
                instr_kind_to_str[instr.kind], 
                cpu.pc, cpu.a, cpu.x, cpu.y,
-               cpu.status.c, cpu.status.z, cpu.status.i, cpu.status.d,
-               cpu.status.b, cpu.status.v, cpu.status.n,
+               cpu.status.c, cpu.status.z, cpu.status.i, cpu.status.d, cpu.status.v, cpu.status.n,
                addr_mode_to_str[instr.addr_mode]);
 
     cpu.pc++;
-    const operand = resolve_operand(instr.addr_mode);
-    dispatch_instruction(instr, operand);
+    var operand = resolve_operand(instr.addr_mode);
+    dispatch_instruction(&instr, &operand);
     cpu.cycles += instr.cycles;
 }
 
@@ -72,10 +71,9 @@ fn resolve_operand(mode: AddrMode) Operand
 {
     var operand = Operand{}; 
     switch mode {
-    case AddrMode.Implied:
+    case AddrMode.Implied: break;
     case AddrMode.Accumulator:
         operand.value = cpu.a;
-        break;
     case AddrMode.Immediate:
         operand.addr = cpu.pc;
         operand.value = bus::read(cpu.pc);
@@ -127,42 +125,80 @@ fn resolve_operand(mode: AddrMode) Operand
     return operand;
 }
 
-fn dispatch_instruction(instr: Instr, operand: Operand) void
+fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
 {
     switch instr.kind {
-    case InstrKind.NOP:
-        break;
+    case InstrKind.Invalid:
+        io::printf("Bad instruction.");
     case InstrKind.ADC:
+        const opval = operand.loadValue();
+        const result: ushort = cast<ushort>(cpu.a) + opval + cast<ushort>(cpu.status.c);
+        cpu.status.c = result > 0xFF;
+        cpu.status.v = ((result ^ cpu.a) & (result ^ opval) & 0x80) == 0x80;
+        cpu.a = cast<ubyte>(result);
+        set_nz(cpu.a);
     case InstrKind.AND:
+        cpu.a &= operand.loadValue();
+        set_nz(cpu.a);
     case InstrKind.ASL:
+        const val = operand.loadValue();
+        const result = val << 1;
+        set_mem_or_acc(result, operand, instr);
+        cpu.status.c = (val >> 7) == 1;
+        set_nz(result);
     case InstrKind.BCC:
+        branch_if_cond(!cpu.status.c, operand);
     case InstrKind.BCS:
-        todo(null);
+        branch_if_cond(cpu.status.c, operand);
     case InstrKind.BEQ:
-        if cpu.status.z {
-            cpu.pc = operand.addr;
-            cpu.cycles++;
-        }
+        branch_if_cond(cpu.status.z, operand);
     case InstrKind.BIT:
+        const val = operand.loadValue();
+        const result = cpu.a & val;
+        cpu.status.z = result == 0;
+        cpu.status.n = (val & (1 << 7)) == (1 << 7);
+        cpu.status.v = (val & (1 << 6)) == (1 << 6);
     case InstrKind.BMI:
+        branch_if_cond(cpu.status.n, operand);
     case InstrKind.BNE:
+        branch_if_cond(!cpu.status.z, operand);
     case InstrKind.BPL:
+        branch_if_cond(!cpu.status.n, operand);
     case InstrKind.BRK:
+        todo("BRK not implemented");
     case InstrKind.BVC:
+        branch_if_cond(!cpu.status.v, operand);
     case InstrKind.BVS:
+        branch_if_cond(cpu.status.v, operand);
     case InstrKind.CLC:
+        cpu.status.c = false;
     case InstrKind.CLD:
+        cpu.status.d = false;
     case InstrKind.CLI:
+        cpu.status.i = false;
     case InstrKind.CLV:
+        cpu.status.v = false;
     case InstrKind.CMP:
+        compare_op(cpu.a, operand);
     case InstrKind.CPX:
+        compare_op(cpu.x, operand);
     case InstrKind.CPY:
+        compare_op(cpu.y, operand);
     case InstrKind.DEC:
+        const result = operand.loadValue() - 1;
+        bus::write(operand.addr, result);
+        set_nz(result);
     case InstrKind.DEX:
+        set_nz(--cpu.x);
     case InstrKind.DEY:
+        set_nz(--cpu.y);
     case InstrKind.EOR:
+        cpu.a = cpu.a ^ operand.loadValue();
+        set_nz(cpu.a);
     case InstrKind.INC:
-        todo(null);
+        const result = operand.loadValue() + 1;
+        bus::write(operand.addr, result);
+        set_nz(result);
     case InstrKind.INX:
         set_nz(++cpu.x);
     case InstrKind.INY:
@@ -170,7 +206,9 @@ fn dispatch_instruction(instr: Instr, operand: Operand) void
     case InstrKind.JMP:
         cpu.pc = operand.addr;
     case InstrKind.JSR:
-        todo(null);
+        stack_push(cast<ubyte>(cpu.pc >> 8));
+        stack_push(cast<ubyte>(cpu.pc));
+        cpu.pc = operand.addr;
     case InstrKind.LDA:
         cpu.a = operand.loadValue();
         set_nz(cpu.a);
@@ -181,11 +219,31 @@ fn dispatch_instruction(instr: Instr, operand: Operand) void
         cpu.y = operand.loadValue();
         set_nz(cpu.y);
     case InstrKind.LSR:
+        const val = operand.loadValue();
+        const result = val >> 1;
+        set_mem_or_acc(result, operand, instr);
+        cpu.status.c = (val & 1) == 1;
+        cpu.status.n = false;
+        cpu.status.z = result == 0;
+    case InstrKind.NOP:
+        break;
     case InstrKind.ORA:
+        cpu.a |= operand.loadValue();
+        set_nz(cpu.a);
     case InstrKind.PHA:
+        stack_push(cpu.a);
     case InstrKind.PHP:
+        stack_push(get_status());
     case InstrKind.PLA:
+        cpu.a = stack_pop();
     case InstrKind.PLP:
+        const status = stack_pop();
+        cpu.status.c = (status & (1 << 0)) == (1 << 0);
+        cpu.status.z = (status & (1 << 1)) == (1 << 1);
+        cpu.status.i = (status & (1 << 2)) == (1 << 2);
+        cpu.status.d = (status & (1 << 3)) == (1 << 3);
+        cpu.status.v = (status & (1 << 6)) == (1 << 6);
+        cpu.status.n = (status & (1 << 7)) == (1 << 7);
     case InstrKind.ROL:
     case InstrKind.ROR:
     case InstrKind.RTI:
@@ -231,10 +289,60 @@ fn dispatch_instruction(instr: Instr, operand: Operand) void
 
 }
 
+fn set_mem_or_acc(value: ubyte, operand: *const Operand, instr: *const Instr) void
+{
+    if instr.addr_mode == AddrMode.Accumulator {
+        cpu.a = value;
+    } else {
+        bus::write(operand.addr, value);
+    }
+
+}
+
+fn branch_if_cond(cond: bool, operand: *const Operand) void
+{
+    if cond {
+        cpu.pc = operand.addr;
+        cpu.cycles++;
+    }
+}
+
+fn compare_op(regval: ubyte, operand: *Operand) void
+{
+    const val = operand.loadValue();
+    const result = regval - val;
+    cpu.status.c = regval >= val;
+    cpu.status.z = regval == val;
+    cpu.status.n = (result >> 7) == 1;
+}
+
 fn set_nz(result: ubyte) void
 {
     cpu.status.n = (result >> 7) == 1;
     cpu.status.z = result == 0;
+}
+
+fn stack_push(value: ubyte) void
+{
+    bus::write(cpu.sp--, value);
+}
+
+fn stack_pop() ubyte
+{
+    return bus::read(++cpu.sp);
+}
+
+fn get_status() ubyte
+{
+    return
+        (cast<ubyte>(cpu.status.c) << 0) |
+        (cast<ubyte>(cpu.status.z) << 1) |
+        (cast<ubyte>(cpu.status.i) << 2) |
+        (cast<ubyte>(cpu.status.d) << 3) |
+        (1                         << 4) | // B is set to 1 for pushes, etc.
+        (1                         << 5) | // unused bit, usually set
+        (cast<ubyte>(cpu.status.v) << 6) |
+        (cast<ubyte>(cpu.status.n) << 7);
 }
 
 pub fn cycle(count: uint) void
@@ -248,10 +356,11 @@ pub fn set_pc(pc: ushort) void
 }
 
 
+
 enum InstrKind : ubyte
 {
+    Invalid,
     // Official
-    NOP,
     ADC,
     AND,
     ASL,
@@ -285,6 +394,7 @@ enum InstrKind : ubyte
     LDX,
     LDY,
     LSR,
+    NOP,
     ORA,
     PHA,
     PHP,
