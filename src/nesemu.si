@@ -33,6 +33,11 @@ fn main(args: []CString) int
     }
     context.rom = NesROM.from_file(args[1]);
     if context.rom == null { return 1; }
+    CPU.reset();
+    CPU.set_debug_entry(0xC000);
+    for _i in 0..70 {
+        CPU.step();
+    }
 
     // if !start_window_loop() {
     //     return 1;

@@ -1,8 +1,8 @@
 import cpu;
 import io;
 import context;
-import main;
 
+@nodiscard
 pub fn read(addr: ushort) ubyte
 {
     if addr >= 0x8000 {
@@ -19,9 +19,10 @@ pub fn read(addr: ushort) ubyte
     return context.ram[addr];
 }
 
+@nodiscard
 pub fn read16(addr: ushort) ushort
 {
-    return *cast<*ushort>(&context.ram[addr]);
+    return (cast<ushort>(read(addr + 1)) << 8) | read(addr);
 }
 
 pub fn write(addr: ushort, value: ubyte) void

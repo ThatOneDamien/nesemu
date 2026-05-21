@@ -3,6 +3,7 @@ import io;
 import malloc;
 
 #const NES_CONSTANT: uint = 0x1A53454E;
+
 pub struct ROMHeader
 {
     nes_constant: uint,
@@ -13,6 +14,7 @@ pub struct ROMHeader
     flags8: ubyte,
     flags9: ubyte,
     flags10: ubyte,
+    reserved: [5]ubyte,
 }
 
 pub struct NesROM
@@ -35,16 +37,25 @@ pub fn NesROM.from_file(file_path: CString) ?NesROM
 
     const buf = cast<*ROMHeader>(malloc(sz));
     io::read(fd, buf, sz);
+    io::close(fd);
     const prg_size = cast<uint>(buf.prg_rom_size) * 0x4000;
     const chr_size = cast<uint>(buf.chr_rom_size) * 0x2000;
-    if buf.nes_constant == NES_CONSTANT {
-        io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
+    if buf.nes_constant != NES_CONSTANT {
+        io::printf("Rom \'%s\' was detected to be invalid.\n", file_path);
+        return null;
     }
 
-    io::close(fd);
+    const data = cast<*[*]ubyte>(buf);
+    var prg_offset: usize = #sizeof(ROMHeader);
+    io::printf("offset: %lu\n", prg_offset);
+    if (buf.flags6 & 0x04) != 0 {
+        prg_offset += 512;
+    }
+    const chr_offset = prg_offset + prg_size;
+    io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
     return NesROM {
         header: buf,
-        prg_rom: cast<*[*]ubyte>(buf + 1)[0..prg_size],
-        chr_rom: cast<*[*]ubyte>(buf + 1)[prg_size..prg_size + chr_size],
+        prg_rom: data[prg_offset..chr_offset],
+        chr_rom: data[chr_offset..chr_offset + chr_size],
     };
 }
