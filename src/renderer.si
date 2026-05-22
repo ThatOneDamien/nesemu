@@ -1,0 +1,41 @@
+import sdl;
+import context;
+import io;
+
+pub struct Renderer
+{
+    framebuffer: [256 * 240]ubyte,
+    sdl_ref: ?*sdl::Renderer,
+    sdl_texture: ?*sdl::Texture,
+}
+
+#const renderer = &context.renderer;
+
+pub fn init(window: *sdl::Window) void
+{
+    renderer.sdl_ref = sdl::CreateRenderer(window, null);
+    if renderer.sdl_ref == null {
+        io::printf("CreateRenderer failed: %s\n", sdl::GetError());
+        sdl::Quit();
+        return;
+    }
+
+    renderer.sdl_texture = sdl::CreateTexture(renderer.sdl_ref!, sdl::PixelFormat.RGBA32, sdl::TextureAccess.STREAMING, 256, 240);
+    if renderer.sdl_texture == null {
+        io::printf("CreateTexture failed: %s\n", sdl::GetError());
+        sdl::Quit();
+        return;
+    }
+
+}
+
+pub fn render_pixel() void
+{
+    const x = context.ppu.cycle - 1;
+    const y = context.ppu.scanline;
+
+    const index = y * 256 + x;
+
+    // TEMP: placeholder color (you’ll replace with tile logic later)
+    renderer.framebuffer[index] = 0;
+}

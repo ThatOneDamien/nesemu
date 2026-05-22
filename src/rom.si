@@ -20,8 +20,8 @@ pub struct ROMHeader
 pub struct NesROM
 {
     header: *ROMHeader,
-    prg_rom: []ubyte,
-    chr_rom: []ubyte,
+    prg: []ubyte,
+    chr: []ubyte,
 }
 
 pub fn NesROM.from_file(file_path: CString) ?NesROM
@@ -55,7 +55,7 @@ pub fn NesROM.from_file(file_path: CString) ?NesROM
     io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
     return NesROM {
         header: buf,
-        prg_rom: data[prg_offset..chr_offset],
-        chr_rom: data[chr_offset..chr_offset + chr_size],
+        prg: data[prg_offset..chr_offset],
+        chr: data[chr_offset..chr_offset + chr_size],
     };
 }

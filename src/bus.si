@@ -1,22 +1,43 @@
 import cpu;
+import ppu;
 import io;
 import context;
+import todo;
 
 @nodiscard
 pub fn read(addr: ushort) ubyte
 {
+    // Program ROM
     if addr >= 0x8000 {
     
         const rom_addr = addr - 0x8000;
 
         // mirror if only 16KB PRG
-        if context.rom!.prg_rom.len == 0x4000 {
-            return context.rom!.prg_rom[rom_addr & 0x3FFF];
+        if context.rom!.prg.len == 0x4000 {
+            return context.rom!.prg[rom_addr & 0x3FFF];
         }
 
-        return context.rom!.prg_rom[rom_addr];
+        return context.rom!.prg[rom_addr];
     }
-    return context.ram[addr];
+    
+    // 2KB RAM mirrored
+    if addr < 0x2000 {
+        return context.ram[addr & 0x7FF];
+    }
+
+    // PPU registers mirrored every 8 bytes
+    if addr < 0x4000 {
+        return ppu::read_register(addr & 0x7);
+    }
+
+        // APU + IO
+    if addr < 0x4020 {
+        todo("APU + IO read");
+        return 0;
+    }
+    
+    todo("Cartridge RAM read.");
+    return 0;
 }
 
 @nodiscard

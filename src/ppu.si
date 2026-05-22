@@ -1,0 +1,232 @@
+import context;
+import io;
+
+pub struct PPU
+{
+    ctrl: ubyte,
+    mask: ubyte,
+    status: ubyte,
+    oam_addr: ubyte,
+
+    // Internal registers
+    v: ushort,
+    t: ushort,
+    x: ubyte,
+    w: bool,
+
+    data_buffer: ubyte,
+
+    cycle: ulong,
+    scanline: ushort,
+    frame: ulong,
+
+    oam: [256]ubyte,
+    vram: [0x4000]ubyte,
+    palette: [32]ubyte,
+}
+
+enum PPURegister : ushort
+{
+    CTRL,
+    MASK,
+    STATUS,
+    OAM_ADDR,
+    OAM_DATA,
+    SCROLL,
+    ADDR,
+    DATA,
+    OAM_DMA,
+}
+
+#const ppu = &context.ppu;
+#const VBLANK_SCANLINE: ushort = 241;
+#const PRE_RENDER_SCANLINE: ushort = 261;
+
+pub fn tick() void
+{
+    ppu.cycle += 1;
+
+    if ppu.cycle >= 341 {
+        ppu.cycle = 0;
+        ppu.scanline += 1;
+
+        if ppu.scanline > 261 {
+            ppu.scanline = 0;
+            ppu.frame += 1;
+        }
+    }
+
+    // ENTER VBLANK
+    if ppu.scanline == VBLANK_SCANLINE && ppu.cycle == 1 {
+        ppu.status |= 0x80; // set VBlank flag
+
+        if (ppu.ctrl & 0x80) != 0 {
+            context.cpu.nmi_pending = true;
+        }
+    }
+
+    // EXIT VBLANK (pre-render line)
+    if ppu.scanline == PRE_RENDER_SCANLINE && ppu.cycle == 1 {
+        ppu.status &= ~cast<ubyte>(0x80);
+    }
+}
+
+@nodiscard
+pub fn read_register(reg: ushort) ubyte
+{
+    switch cast<PPURegister>(reg) {
+    case PPURegister.CTRL:
+        io::printf("Attempted to read write-only PPUCTRL.\n");
+        return 0;
+    case PPURegister.MASK:
+        io::printf("Attempted to read write-only PPUMASK.\n");
+        return 0;
+    case PPURegister.STATUS:
+        const value = ppu.status;
+
+        // clear vblank flag
+        ppu.status &= ~(cast<ubyte>(0x80));
+        ppu.w = false;
+        return value;
+    case PPURegister.OAM_ADDR:
+        io::printf("Attempted to read write-only OAMADDR.\n");
+        return 0;
+    case PPURegister.OAM_DATA:
+        return ppu.oam[ppu.oam_addr];
+    case PPURegister.SCROLL:
+        io::printf("Attempted to read write-only PPUSCROLL.\n");
+        return 0;
+    case PPURegister.ADDR:
+        io::printf("Attempted to read write-only PPUADDR.\n");
+        return 0;
+    case PPURegister.DATA:
+        const addr = ppu.v & 0x3FFF;
+
+        var value: ubyte = void;
+        if addr >= 0x3F00 {
+            value = read(addr);
+        } else {
+            value = ppu.data_buffer;
+            ppu.data_buffer = read(addr);
+        }
+
+        if (ppu.ctrl & 0x04) != 0 {
+            ppu.v += 32;
+        } else {
+            ppu.v += 1;
+        }
+
+        return value;
+    default:
+        io::printf("Bad PPU register read: %hu.\n", reg);
+        return 0;
+    }
+}
+
+pub fn write_register(addr: ushort, value: ubyte) void
+{
+    const reg = addr & 7;
+
+    switch cast<PPURegister>(reg) {
+    case PPURegister.CTRL:
+        ppu.ctrl = value;
+
+        // update nametable bits in temporary VRAM address
+        ppu.t &= ~cast<ushort>(0x0C00);
+        ppu.t |= (cast<ushort>(value & 0x03) << 10);
+    case PPURegister.MASK:
+        ppu.mask = value;
+    case PPURegister.STATUS:
+        io::printf("Attempted to write read-only PPUSTATUS.\n");
+    case PPURegister.OAM_ADDR:
+        ppu.oam_addr = value;
+    case PPURegister.OAM_DATA:
+        ppu.oam[ppu.oam_addr] = value;
+        ppu.oam_addr += 1;
+    case PPURegister.SCROLL:
+        if !ppu.w {
+            // first write
+            // coarse X + fine X
+            ppu.t &= ~cast<ushort>(0x001F);
+            ppu.t |= cast<ushort>(value >> 3);
+            ppu.x = value & 0x07;
+            ppu.w = true;
+        }
+        else {
+            // second write
+            // coarse Y + fine Y
+            ppu.t &= ~cast<ushort>(0x73E0);
+            ppu.t |= cast<ushort>(value & 0x07) << 12;
+            ppu.t |= cast<ushort>(value & 0xF8) << 2;
+            ppu.w = false;
+        }
+    case PPURegister.ADDR:
+        if !ppu.w {
+            // first write = high byte
+            ppu.t &= 0x00FF;
+            ppu.t |= cast<ushort>(value & 0x3F) << 8;
+            ppu.w = true;
+        }
+        else {
+
+            // second write = low byte
+
+            ppu.t &= 0x7F00;
+            ppu.t |= value;
+
+            ppu.v = ppu.t;
+
+            ppu.w = false;
+        }
+    case PPURegister.DATA:
+        write(ppu.v & 0x3FFF, value);
+
+        if (ppu.ctrl & 0x04) != 0 {
+            ppu.v += 32;
+        }
+        else {
+            ppu.v += 1;
+        }
+    default:
+        io::printf("Bad PPU register write: %hu.\n", addr);
+    }
+}
+
+@nodiscard
+fn read(addr: ushort) ubyte
+{
+    const a = addr & 0x3FFF;
+
+    // Pattern tables (CHR ROM/RAM)
+    if a < 0x2000 {
+        return context.rom!.chr[a];
+    }
+
+    // Nametables
+    if a < 0x3F00 {
+        return ppu.vram[a & 0x0FFF];
+    }
+
+    // Palette RAM mirrors every 32 bytes, and some special mirroring rules later
+    return ppu.palette[a & 0x001F];
+}
+
+fn write(addr: ushort, value: ubyte) void
+{
+    const a = addr & 0x3FFF;
+
+    // Pattern tables (CHR ROM/RAM)
+    if a < 0x2000 {
+        context.rom!.chr[a] = value;
+        return;
+    }
+
+    // Nametables
+    if a < 0x3F00 {
+        ppu.vram[a & 0x0FFF] = value;
+        return;
+    }
+
+    // Palette RAM mirrors every 32 bytes, and some special mirroring rules later
+    ppu.palette[a & 0x001F] = value;
+}

@@ -22,7 +22,7 @@ pub struct CPU
     pc: ushort,
     status: StatusReg,
     cycles: ulong,
-
+    nmi_pending: bool,
 }
 
 pub struct StatusReg
@@ -49,7 +49,7 @@ fn Operand.load_value(op: *Operand) ubyte
     return op.value!;
 }
 
-fn CPU.reset() void
+pub fn reset() void
 {
     cpu.a  = 0x00;
     cpu.x  = 0x00;
@@ -59,17 +59,19 @@ fn CPU.reset() void
         i: true,
     };
     cpu.pc = bus::read16(0xFFFC);
+    cpu.cycles = 7;
 }
 
-fn CPU.set_debug_entry(pc: ushort) void
+pub fn set_debug_entry(pc: ushort) void
 {
     cpu.pc = pc;
 }
 
 #const cpu = &context.cpu;
 
-pub fn CPU.step() void
+pub fn step() ubyte
 {
+    const original_cycles = cpu.cycles;
     const opcode = bus::read(cpu.pc);
     const instr = opcodes[opcode];
     io::printf("(CPU) PC:%.4hX  %.2hhX ", cpu.pc, opcode);
@@ -80,16 +82,35 @@ pub fn CPU.step() void
     } else if instr.bytes == 3 {
         io::printf("%.2hhX %.2hhX", bus::read(cpu.pc + 1), bus::read(cpu.pc + 2));
     }
-    io::printf("  %s    A:%.2hhX X:%.2hhX Y:%.2hhX SP:%.2hhX CZIDVN:%1u%1u%1u%1u%1u%1u AddrMode:%-12s\n", 
+    io::printf("  %s    A:%.2hhX X:%.2hhX Y:%.2hhX SP:%.2hhX CZIDVN:%1u%1u%1u%1u%1u%1u Cycles:%lu AddrMode:%-12s\n", 
                instr_kind_to_str[instr.kind], 
                cpu.a, cpu.x, cpu.y, cpu.sp,
                cpu.status.c, cpu.status.z, cpu.status.i, cpu.status.d, cpu.status.v, cpu.status.n,
+               cpu.cycles,
                addr_mode_to_str[instr.addr_mode]);
 
     cpu.pc++;
     var operand = resolve_operand(instr.addr_mode);
     dispatch_instruction(&instr, &operand);
     cpu.cycles += instr.cycles;
+    return cast<ubyte>(original_cycles - cpu.cycles);
+}
+
+pub fn check_nmi() void
+{
+    if cpu.nmi_pending {
+        cpu.nmi_pending = false;
+        stack_push16(cpu.pc);
+        // push status (with correct flags handling)
+        stack_push(get_status(false));
+
+        // disable interrupts
+        cpu.status.i = true;
+
+        // jump to NMI vector
+        cpu.pc = bus::read16(0xFFFA);
+        cpu.cycles += 7;
+    }
 }
 
 fn resolve_operand(mode: AddrMode) Operand
@@ -279,7 +300,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case InstrKind.PHA:
         stack_push(cpu.a);
     case InstrKind.PHP:
-        stack_push(get_status());
+        stack_push(get_status(true));
     case InstrKind.PLA:
         cpu.a = stack_pop();
     case InstrKind.PLP:
@@ -360,6 +381,9 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case InstrKind.STP:
         todo(null);
     }
+    if operand.page_crossed && instr.page_cross_penalty {
+        cpu.cycles++;
+    }
 
 }
 
@@ -401,6 +425,12 @@ fn stack_push(value: ubyte) void
     bus::write(cpu.sp--, value);
 }
 
+fn stack_push16(value: ushort) void
+{
+    bus::write(cpu.sp--, cast<ubyte>(value >> 8));
+    bus::write(cpu.sp--, cast<ubyte>(value));
+}
+
 fn stack_pop() ubyte
 {
     return bus::read(++cpu.sp);
@@ -424,14 +454,14 @@ fn pop_status() void
     cpu.status.n = (status & (1 << 7)) != 0;
 }
 
-fn get_status() ubyte
+fn get_status(break_flag: bool) ubyte
 {
     return
         (cast<ubyte>(cpu.status.c) << 0) |
         (cast<ubyte>(cpu.status.z) << 1) |
         (cast<ubyte>(cpu.status.i) << 2) |
         (cast<ubyte>(cpu.status.d) << 3) |
-        (1                         << 4) | // B is set to 1 for pushes, etc.
+        (cast<ubyte>(break_flag)   << 4) | // B is set to 1 for pushes, 0 for IRQ/NMI
         (1                         << 5) | // unused bit, usually set
         (cast<ubyte>(cpu.status.v) << 6) |
         (cast<ubyte>(cpu.status.n) << 7);

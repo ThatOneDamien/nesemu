@@ -1,22 +1,26 @@
 pub mod sdl;
 pub mod cpu;
+pub mod ppu;
 pub mod io;
 pub mod bus;
 pub mod rom;
+pub mod renderer;
 
 import rom::NesROM;
-import cpu::CPU;
 
 pub typedef CString = *[*]const char;
 pub extern fn malloc(size: usize) *void;
 
 pub var context: EmuContext;
+pub var window: ?*sdl::Window;
 
 pub struct EmuContext
 {
-    cpu: CPU,
-    ram: [0x10000]ubyte,
+    cpu: cpu::CPU,
+    ppu: ppu::PPU,
+    ram: [0x800]ubyte,
     rom: ?NesROM,
+    renderer: renderer::Renderer,
 }
 
 pub fn todo(name: ?CString) void
@@ -33,15 +37,19 @@ fn main(args: []CString) int
     }
     context.rom = NesROM.from_file(args[1]);
     if context.rom == null { return 1; }
-    CPU.reset();
-    CPU.set_debug_entry(0xC000);
+    cpu::reset();
+    cpu::set_debug_entry(0xC000);
     for _i in 0..70 {
-        CPU.step();
+        const cycles = cpu::step();
+        for i in 0..cast<usize>(cycles)*3 {
+            ppu::tick();
+        }
+        cpu::check_nmi();
     }
 
-    // if !start_window_loop() {
-    //     return 1;
-    // }
+    if !start_window_loop() {
+        return 1;
+    }
     return 0;
 }
 
@@ -53,22 +61,14 @@ fn start_window_loop() bool
 		return false;
 	}
     
-    const win = sdl::CreateWindow("My Bum Ah Nes Emulator", 800, 600, 0);
-    if (win == null) {
+    window = sdl::CreateWindow("My Bum Ah Nes Emulator", 800, 600, 0);
+    if (window == null) {
         io::printf("CreateWindow failed: %s\n", sdl::GetError());
         sdl::Quit();
         return false;
     }
 
-    const window = win!;
-    const ren = sdl::CreateRenderer(window, null);
-    if (ren == null) {
-        io::printf("CreateRenderer failed: %s\n", sdl::GetError());
-        sdl::Quit();
-        return false;
-    }
-
-    const renderer = ren!;
+    renderer::init(window!);
 
     var running = true;
     var event: sdl::Event;
@@ -80,15 +80,15 @@ fn start_window_loop() bool
             }
         }
 
-        sdl::SetRenderDrawColor(renderer, 0, 12, 59, 255);
-        sdl::RenderClear(renderer);
-
-        sdl::RenderPresent(renderer);
+        // sdl::SetRenderDrawColor(renderer, 0, 12, 59, 255);
+        // sdl::RenderClear(renderer);
+        //
+        // sdl::RenderPresent(renderer);
 
         sdl::Delay(16); // ~60 FPS idle loop
     }
 
-    sdl::DestroyWindow(window);
+    sdl::DestroyWindow(window!);
     sdl::Quit();
     return true;
 }
