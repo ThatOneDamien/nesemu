@@ -12,7 +12,9 @@ pub typedef CString = *[*]const char;
 pub extern fn malloc(size: usize) *void;
 
 pub var context: EmuContext;
-pub var window: ?*sdl::Window;
+pub #const WINDOW_W: uint = 256;
+pub #const WINDOW_H: uint = 240;
+pub #const WINDOW_SCALE: uint = 3;
 
 pub struct EmuContext
 {
@@ -21,6 +23,8 @@ pub struct EmuContext
     ram: [0x800]ubyte,
     rom: ?NesROM,
     renderer: renderer::Renderer,
+    window: ?*sdl::Window,
+    running: bool,
 }
 
 pub fn todo(name: ?CString) void
@@ -35,25 +39,40 @@ fn main(args: []CString) int
         io::printf("Usage: %s [ROM path]\n", args[0]);
         return 0;
     }
+    if(!create_window()) {
+        return 1;
+    }
+
     context.rom = NesROM.from_file(args[1]);
     if context.rom == null { return 1; }
     cpu::reset();
-    cpu::set_debug_entry(0xC000);
-    for _i in 0..70 {
-        const cycles = cpu::step();
-        for i in 0..cast<usize>(cycles)*3 {
+    renderer::init(context.window!);
+
+    context.running = true;
+
+    while context.running {
+    // for _a in 0..8991 {
+        process_events();
+        const cycles: usize = cpu::step();
+
+        for _i in 0..cycles * 3 {
             ppu::tick();
+
+            if context.ppu.frame_ready {
+                renderer::present_frame();
+                context.ppu.frame_ready = false;
+            }
         }
+
         cpu::check_nmi();
     }
 
-    if !start_window_loop() {
-        return 1;
-    }
+    sdl::DestroyWindow(context.window!);
+    sdl::Quit();
     return 0;
 }
 
-fn start_window_loop() bool 
+fn create_window() bool 
 {
     if(!sdl::Init(sdl::INIT_VIDEO))
 	{
@@ -61,34 +80,23 @@ fn start_window_loop() bool
 		return false;
 	}
     
-    window = sdl::CreateWindow("My Bum Ah Nes Emulator", 800, 600, 0);
-    if (window == null) {
+    context.window = sdl::CreateWindow("My Bum Ah Nes Emulator", cast<int>(WINDOW_W * WINDOW_SCALE), cast<int>(WINDOW_H * WINDOW_SCALE), 0);
+    if (context.window == null) {
         io::printf("CreateWindow failed: %s\n", sdl::GetError());
         sdl::Quit();
         return false;
     }
 
-    renderer::init(window!);
+    return true;
+}
 
-    var running = true;
+fn process_events() void 
+{
     var event: sdl::Event;
 
-    while (running) {
-        while (sdl::PollEvent(&event)) {
-            if (event.type == sdl::EVENT_QUIT) {
-                running = false;
-            }
+    while sdl::PollEvent(&event) {
+        if event.type == sdl::EventType.QUIT {
+            context.running = false;
         }
-
-        // sdl::SetRenderDrawColor(renderer, 0, 12, 59, 255);
-        // sdl::RenderClear(renderer);
-        //
-        // sdl::RenderPresent(renderer);
-
-        sdl::Delay(16); // ~60 FPS idle loop
     }
-
-    sdl::DestroyWindow(window!);
-    sdl::Quit();
-    return true;
 }

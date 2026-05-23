@@ -59,7 +59,9 @@ pub fn reset() void
         i: true,
     };
     cpu.pc = bus::read16(0xFFFC);
-    cpu.cycles = 7;
+    // Temporary
+    // cpu.cycles = 7;
+    // context.ppu.cycle = 21;
 }
 
 pub fn set_debug_entry(pc: ushort) void
@@ -73,8 +75,37 @@ pub fn step() ubyte
 {
     const original_cycles = cpu.cycles;
     const opcode = bus::read(cpu.pc);
-    const instr = opcodes[opcode];
-    io::printf("(CPU) PC:%.4hX  %.2hhX ", cpu.pc, opcode);
+    const instr = &opcodes[opcode];
+
+    print_state(opcode, instr);
+
+    cpu.pc++;
+    var operand = resolve_operand(instr.addr_mode);
+    dispatch_instruction(instr, &operand);
+    cpu.cycles += instr.cycles;
+    return cast<ubyte>(cpu.cycles - original_cycles);
+}
+
+fn print_state(opcode: ubyte, instr: *const Instr) void
+{
+    
+    // io::printf("(CPU) PC:%.4hX  %.2hhX ", cpu.pc, opcode);
+    // if instr.bytes == 1 {
+    //     io::printf("     ");
+    // } else if instr.bytes == 2 {
+    //     io::printf("%.2hhX   ", bus::read(cpu.pc + 1));
+    // } else if instr.bytes == 3 {
+    //     io::printf("%.2hhX %.2hhX", bus::read(cpu.pc + 1), bus::read(cpu.pc + 2));
+    // }
+    // io::printf("  %s    A:%.2hhX X:%.2hhX Y:%.2hhX SP:%.2hhX CZIDVN:%1u%1u%1u%1u%1u%1u Cycles:%lu AddrMode:%-12s\n", 
+    //            instr_kind_to_str[instr.kind], 
+    //            cpu.a, cpu.x, cpu.y, cpu.sp,
+    //            cpu.status.c, cpu.status.z, cpu.status.i, cpu.status.d, cpu.status.v, cpu.status.n,
+    //            cpu.cycles,
+    //            addr_mode_to_str[instr.addr_mode]);
+
+    // For nestest
+    io::printf("%.4hX  %.2hhX ", cpu.pc, opcode);
     if instr.bytes == 1 {
         io::printf("     ");
     } else if instr.bytes == 2 {
@@ -82,18 +113,12 @@ pub fn step() ubyte
     } else if instr.bytes == 3 {
         io::printf("%.2hhX %.2hhX", bus::read(cpu.pc + 1), bus::read(cpu.pc + 2));
     }
-    io::printf("  %s    A:%.2hhX X:%.2hhX Y:%.2hhX SP:%.2hhX CZIDVN:%1u%1u%1u%1u%1u%1u Cycles:%lu AddrMode:%-12s\n", 
-               instr_kind_to_str[instr.kind], 
-               cpu.a, cpu.x, cpu.y, cpu.sp,
-               cpu.status.c, cpu.status.z, cpu.status.i, cpu.status.d, cpu.status.v, cpu.status.n,
-               cpu.cycles,
-               addr_mode_to_str[instr.addr_mode]);
+    io::printf("  %s  A:%.2hhX X:%.2hhX Y:%.2hhX P:%.2hhX SP:%.2hhX PPU:%3hu,%3hu CYC:%lu\n",
+               instr_kind_to_str[instr.kind],
+               cpu.a, cpu.x, cpu.y, get_status(false), cpu.sp,
+               context.ppu.scanline, context.ppu.cycle % 341,
+               cpu.cycles);
 
-    cpu.pc++;
-    var operand = resolve_operand(instr.addr_mode);
-    dispatch_instruction(&instr, &operand);
-    cpu.cycles += instr.cycles;
-    return cast<ubyte>(original_cycles - cpu.cycles);
 }
 
 pub fn check_nmi() void
@@ -232,7 +257,12 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case InstrKind.BPL:
         branch_if_cond(!cpu.status.n, operand);
     case InstrKind.BRK:
-        todo("BRK not implemented");
+        cpu.pc++;
+        stack_push16(cpu.pc);
+        stack_push(get_status(true));
+        cpu.status.i = true;
+        cpu.pc = bus::read16(0xFFFE);
+
     case InstrKind.BVC:
         branch_if_cond(!cpu.status.v, operand);
     case InstrKind.BVS:
@@ -246,11 +276,11 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case InstrKind.CLV:
         cpu.status.v = false;
     case InstrKind.CMP:
-        compare_op(cpu.a, operand);
+        compare_op(cpu.a, operand.load_value());
     case InstrKind.CPX:
-        compare_op(cpu.x, operand);
+        compare_op(cpu.x, operand.load_value());
     case InstrKind.CPY:
-        compare_op(cpu.y, operand);
+        compare_op(cpu.y, operand.load_value());
     case InstrKind.DEC:
         const result = operand.load_value() - 1;
         bus::write(operand.addr, result);
@@ -273,8 +303,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case InstrKind.JMP:
         cpu.pc = operand.addr;
     case InstrKind.JSR:
-        stack_push(cast<ubyte>(cpu.pc >> 8));
-        stack_push(cast<ubyte>(cpu.pc));
+        stack_push16(cpu.pc - 1);
         cpu.pc = operand.addr;
     case InstrKind.LDA:
         cpu.a = operand.load_value();
@@ -303,6 +332,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         stack_push(get_status(true));
     case InstrKind.PLA:
         cpu.a = stack_pop();
+        set_nz(cpu.a);
     case InstrKind.PLP:
         pop_status();
     case InstrKind.ROL:
@@ -321,7 +351,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         pop_status();
         cpu.pc = stack_pop16();
     case InstrKind.RTS:
-        cpu.pc = stack_pop16();
+        cpu.pc = stack_pop16() + 1;
     case InstrKind.SBC:
         const not_val = ~operand.load_value();
         const result_full: ushort = cast<ushort>(cpu.a) + not_val + cast<ushort>(cpu.status.c);
@@ -356,7 +386,6 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         set_nz(cpu.a);
     case InstrKind.TXS:
         cpu.sp = cpu.x;
-        set_nz(cpu.sp);
     case InstrKind.TYA:
         cpu.a = cpu.y;
         set_nz(cpu.a);
@@ -364,17 +393,75 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case InstrKind.ANC:
     case InstrKind.ARR:
     case InstrKind.AXS:
+        todo(null);
     case InstrKind.DCP:
-    case InstrKind.ISC:
+        const val = operand.load_value() - 1;
+        bus::write(operand.addr, val);
+        compare_op(cpu.a, val);
+    case InstrKind.ISB:
+        const val = operand.load_value() + 1;
+        bus::write(operand.addr, val);
+
+        const not_val = ~val;
+        const result_full: ushort = cast<ushort>(cpu.a) + not_val + cast<ushort>(cpu.status.c);
+        const result = cast<ubyte>(result_full);
+        cpu.status.c = result_full > 0xFF;
+        cpu.status.v = ((result ^ cpu.a) & (result ^ not_val) & 0x80) != 0;
+        cpu.a = result;
+        set_nz(cpu.a);
     case InstrKind.LAS:
+        todo(null);
     case InstrKind.LAX:
+        const val = operand.load_value();
+        cpu.a = val;
+        cpu.x = val;
+        set_nz(val);
     case InstrKind.RLA:
+        var val = operand.load_value();
+
+        const new_c = (val & 0x80) != 0;
+        val = (val << 1) | cast<ubyte>(cpu.status.c);
+        cpu.status.c = new_c;
+
+        bus::write(operand.addr, val);
+
+        cpu.a &= val;
+        set_nz(cpu.a);
     case InstrKind.RRA:
+        const val = operand.load_value();
+        const result = (val >> 1) | (cast<ubyte>(cpu.status.c) << 7);
+        set_mem_or_acc(result, operand, instr);
+        const carry = val & 0x1;
+        const adc_full: ushort = cast<ushort>(cpu.a) + result + carry;
+        const adc = cast<ubyte>(adc_full);
+        cpu.status.c = adc_full > 0xFF;
+        cpu.status.v = ((adc ^ cpu.a) & (adc ^ result) & 0x80) != 0;
+        cpu.a = adc;
+        set_nz(cpu.a);
     case InstrKind.SAX:
+        const val = cpu.a & cpu.x;
+        bus::write(operand.addr, val);
     case InstrKind.SHX:
     case InstrKind.SHY:
+        todo(null);
     case InstrKind.SLO:
+        var val = operand.load_value();
+        cpu.status.c = (val & 0x80) != 0;
+
+        val = val << 1;
+        bus::write(operand.addr, val);
+
+        cpu.a |= val;
+        set_nz(cpu.a);
     case InstrKind.SRE:
+        var val = operand.load_value();
+        cpu.status.c = (val & 0x01) != 0;
+
+        val = val >> 1;
+        bus::write(operand.addr, val);
+
+        cpu.a ^= val;
+        set_nz(cpu.a);
     case InstrKind.TAS:
     case InstrKind.XAA:
     case InstrKind.AHX:
@@ -400,14 +487,16 @@ fn set_mem_or_acc(value: ubyte, operand: *const Operand, instr: *const Instr) vo
 fn branch_if_cond(cond: bool, operand: *const Operand) void
 {
     if cond {
+        if did_cross_page(cpu.pc, operand.addr) {
+            cpu.cycles++;
+        }
         cpu.pc = operand.addr;
         cpu.cycles++;
     }
 }
 
-fn compare_op(regval: ubyte, operand: *Operand) void
+fn compare_op(regval: ubyte, val: ubyte) void
 {
-    const val = operand.load_value();
     const result = regval - val;
     cpu.status.c = regval >= val;
     cpu.status.z = regval == val;
@@ -422,18 +511,20 @@ fn set_nz(result: ubyte) void
 
 fn stack_push(value: ubyte) void
 {
-    bus::write(cpu.sp--, value);
+    bus::write(0x0100 | cpu.sp, value);
+    cpu.sp--;
 }
 
 fn stack_push16(value: ushort) void
 {
-    bus::write(cpu.sp--, cast<ubyte>(value >> 8));
-    bus::write(cpu.sp--, cast<ubyte>(value));
+    stack_push(cast<ubyte>(value >> 8));
+    stack_push(cast<ubyte>(value));
 }
 
 fn stack_pop() ubyte
 {
-    return bus::read(++cpu.sp);
+    cpu.sp++;
+    return bus::read(0x0100 | cpu.sp);
 }
 
 fn stack_pop16() ushort
@@ -540,7 +631,7 @@ enum InstrKind : ubyte
     ARR,
     AXS,
     DCP,
-    ISC,
+    ISB,
     LAS,
     LAX,
     RLA,
@@ -636,7 +727,7 @@ const instr_kind_to_str: [#type_max(InstrKind) - #type_min(InstrKind) + 1]CStrin
     InstrKind.ARR: "ARR",
     InstrKind.AXS: "AXS",
     InstrKind.DCP: "DCP",
-    InstrKind.ISC: "ISC",
+    InstrKind.ISB: "ISB",
     InstrKind.LAS: "LAS",
     InstrKind.LAX: "LAX",
     InstrKind.RLA: "RLA",
@@ -925,11 +1016,11 @@ const opcodes: [0x100]Instr = [
     0xE0: Instr{ kind: InstrKind.CPX, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
     0xE1: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
     0xE2: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xE3: Instr{ kind: InstrKind.ISC, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xE3: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
     0xE4: Instr{ kind: InstrKind.CPX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
     0xE5: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
     0xE6: Instr{ kind: InstrKind.INC, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
-    0xE7: Instr{ kind: InstrKind.ISC, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0xE7: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
 
     0xE8: Instr{ kind: InstrKind.INX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
     0xE9: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
@@ -938,23 +1029,23 @@ const opcodes: [0x100]Instr = [
     0xEC: Instr{ kind: InstrKind.CPX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
     0xED: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
     0xEE: Instr{ kind: InstrKind.INC, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
-    0xEF: Instr{ kind: InstrKind.ISC, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0xEF: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
 
     0xF0: Instr{ kind: InstrKind.BEQ, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
     0xF1: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
     0xF2: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0xF3: Instr{ kind: InstrKind.ISC, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xF3: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
     0xF4: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
     0xF5: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
     0xF6: Instr{ kind: InstrKind.INC, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0xF7: Instr{ kind: InstrKind.ISC, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xF7: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
 
     0xF8: Instr{ kind: InstrKind.SED, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
     0xF9: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
     0xFA: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xFB: Instr{ kind: InstrKind.ISC, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xFB: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
     0xFC: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
     0xFD: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
     0xFE: Instr{ kind: InstrKind.INC, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0xFF: Instr{ kind: InstrKind.ISC, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xFF: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
 ];

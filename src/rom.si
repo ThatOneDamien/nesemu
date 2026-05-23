@@ -47,12 +47,12 @@ pub fn NesROM.from_file(file_path: CString) ?NesROM
 
     const data = cast<*[*]ubyte>(buf);
     var prg_offset: usize = #sizeof(ROMHeader);
-    io::printf("offset: %lu\n", prg_offset);
+    // io::printf("offset: %lu\n", prg_offset);
     if (buf.flags6 & 0x04) != 0 {
         prg_offset += 512;
     }
     const chr_offset = prg_offset + prg_size;
-    io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
+    // io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
     return NesROM {
         header: buf,
         prg: data[prg_offset..chr_offset],

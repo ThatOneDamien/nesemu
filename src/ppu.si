@@ -1,5 +1,6 @@
 import context;
 import io;
+import renderer;
 
 pub struct PPU
 {
@@ -19,6 +20,7 @@ pub struct PPU
     cycle: ulong,
     scanline: ushort,
     frame: ulong,
+    frame_ready: bool,
 
     oam: [256]ubyte,
     vram: [0x4000]ubyte,
@@ -48,26 +50,27 @@ pub fn tick() void
 
     if ppu.cycle >= 341 {
         ppu.cycle = 0;
-        ppu.scanline += 1;
+        ppu.scanline++;
 
-        if ppu.scanline > 261 {
+        if ppu.scanline > PRE_RENDER_SCANLINE {
             ppu.scanline = 0;
-            ppu.frame += 1;
+            ppu.frame++;
+            ppu.frame_ready = true;
         }
-    }
+    } else if ppu.cycle == 1 {
+        if ppu.scanline == VBLANK_SCANLINE {
+            // ENTER VBLANK
+            ppu.status |= 0x80; // set VBlank flag
 
-    // ENTER VBLANK
-    if ppu.scanline == VBLANK_SCANLINE && ppu.cycle == 1 {
-        ppu.status |= 0x80; // set VBlank flag
-
-        if (ppu.ctrl & 0x80) != 0 {
-            context.cpu.nmi_pending = true;
+            if (ppu.ctrl & 0x80) != 0 {
+                context.cpu.nmi_pending = true;
+            }
+        } else if ppu.scanline == PRE_RENDER_SCANLINE && ppu.cycle == 1 {
+            // EXIT VBLANK (pre-render line)
+            ppu.status &= ~cast<ubyte>(0x80);
         }
-    }
-
-    // EXIT VBLANK (pre-render line)
-    if ppu.scanline == PRE_RENDER_SCANLINE && ppu.cycle == 1 {
-        ppu.status &= ~cast<ubyte>(0x80);
+    } else if ppu.scanline < 240 && ppu.cycle == 0 {
+        renderer::render_scanline(ppu.scanline);
     }
 }
 

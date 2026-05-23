@@ -4,7 +4,7 @@ import io;
 
 pub struct Renderer
 {
-    framebuffer: [256 * 240]ubyte,
+    framebuffer: [240][256]ubyte,
     sdl_ref: ?*sdl::Renderer,
     sdl_texture: ?*sdl::Texture,
 }
@@ -29,13 +29,74 @@ pub fn init(window: *sdl::Window) void
 
 }
 
-pub fn render_pixel() void
+pub fn render_scanline(scanline: ushort) void
 {
-    const x = context.ppu.cycle - 1;
-    const y = context.ppu.scanline;
+    // Only visible area
+    if scanline >= 240 {
+        return;
+    }
 
-    const index = y * 256 + x;
+    const tile_y = scanline / 8;
+    const row_in_tile = scanline % 8;
 
-    // TEMP: placeholder color (you’ll replace with tile logic later)
-    renderer.framebuffer[index] = 0;
+    for tile_x in 0..32 {
+
+        const nametable_index = tile_y * 32 + tile_x;
+        const tile_id = context.ppu.vram[nametable_index & 0x0FFF];
+
+        var pattern_base: ushort = void;
+        if (context.ppu.ctrl & 0x10) != 0 {
+            pattern_base = 0x1000;
+        } else {
+            pattern_base = 0x0000;
+        }
+
+        const tile_addr =
+            pattern_base + cast<ushort>(tile_id) * 16;
+
+        const low  = context.rom!.chr[tile_addr + row_in_tile];
+        const high = context.rom!.chr[tile_addr + row_in_tile + 8];
+
+        for col in 0..8 {
+
+            const bit0 = (low  >> cast<ubyte>(7 - col)) & 1;
+            const bit1 = (high >> cast<ubyte>(7 - col)) & 1;
+
+            const pixel = bit0 | (bit1 << 1);
+
+            var color: ubyte = 0;
+            switch pixel {
+                case 0: color = 0;
+                case 1: color = 85;
+                case 2: color = 170;
+                case 3: color = 255;
+            }
+
+            const screen_x = tile_x * 8 + col;
+            const screen_y = scanline;
+
+            renderer.framebuffer[screen_y][screen_x] = color;
+        }
+    }
+}
+pub fn present_frame() void
+{
+    var pixels: *void;
+    var pitch: int;
+
+    sdl::LockTexture(renderer.sdl_texture!, null, &pixels, &pitch);
+
+    for y in 0..renderer.framebuffer.len {
+
+        const row = cast<*[renderer.framebuffer[0].len]uint>(cast<uptr>(pixels) + (y * cast<usize>(pitch)));
+
+        for x in 0..renderer.framebuffer[y].len {
+            row[x] = renderer.framebuffer[y][x];
+        }
+    }
+
+    sdl::UnlockTexture(renderer.sdl_texture!);
+    sdl::RenderClear(renderer.sdl_ref!);
+    sdl::RenderTexture(renderer.sdl_ref!, renderer.sdl_texture!, null, null);
+    sdl::RenderPresent(renderer.sdl_ref!);
 }

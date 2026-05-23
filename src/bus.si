@@ -48,5 +48,24 @@ pub fn read16(addr: ushort) ushort
 
 pub fn write(addr: ushort, value: ubyte) void
 {
-    context.ram[addr] = value;
+    
+    // 2KB RAM mirrored
+    if addr < 0x2000 {
+        context.ram[addr & 0x7FF] = value;
+        return;
+    }
+
+    // PPU registers mirrored every 8 bytes
+    if addr < 0x4000 {
+        ppu::write_register(addr & 0x7, value);
+        return;
+    }
+
+        // APU + IO
+    if addr < 0x4020 {
+        todo("APU + IO write");
+        return;
+    }
+
+    io::printf("Attempted to write to prg rom.");
 }
