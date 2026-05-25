@@ -21,7 +21,8 @@ pub struct CPU
     sp: ubyte,
     pc: ushort,
     status: StatusReg,
-    cycles: ulong,
+    current_cycles: ubyte,
+    total_cycles: ulong,
     nmi_pending: bool,
 }
 
@@ -49,7 +50,7 @@ fn Operand.load_value(op: *Operand) ubyte
     return op.value!;
 }
 
-pub fn reset() void
+pub fn power() void
 {
     cpu.a  = 0x00;
     cpu.x  = 0x00;
@@ -59,31 +60,43 @@ pub fn reset() void
         i: true,
     };
     cpu.pc = bus::read16(0xFFFC);
-    // Temporary
-    // cpu.cycles = 7;
-    // context.ppu.cycle = 21;
+    cpu.total_cycles = 7;
+    cpu.current_cycles = 0;
+    cpu.nmi_pending = false;
 }
 
-pub fn set_debug_entry(pc: ushort) void
+pub fn reset() void
 {
-    cpu.pc = pc;
+    cpu.sp -= 3;
+    cpu.status.i = true;
+    cpu.pc = bus::read16(0xFFFC);
+    cpu.current_cycles = 0;
+    cpu.nmi_pending = false;
 }
 
 #const cpu = &context.cpu;
 
-pub fn step() ubyte
+pub fn tick() void
 {
-    const original_cycles = cpu.cycles;
-    const opcode = bus::read(cpu.pc);
-    const instr = &opcodes[opcode];
+    if cpu.current_cycles == 0 {
 
-    print_state(opcode, instr);
+        if cpu.nmi_pending {
+            cpu.nmi_pending = false;
+            nmi();
+        } else {
+            const opcode = bus::read(cpu.pc);
+            const instr = &opcodes[opcode];
 
-    cpu.pc++;
-    var operand = resolve_operand(instr.addr_mode);
-    dispatch_instruction(instr, &operand);
-    cpu.cycles += instr.cycles;
-    return cast<ubyte>(cpu.cycles - original_cycles);
+            // print_state(opcode, instr);
+
+            cpu.pc++;
+            cpu.current_cycles = instr.cycles;
+            var operand = resolve_operand(instr.addr_mode);
+            dispatch_instruction(instr, &operand);
+        }
+    }
+    cpu.current_cycles--;
+    cpu.total_cycles++;
 }
 
 fn print_state(opcode: ubyte, instr: *const Instr) void
@@ -117,25 +130,22 @@ fn print_state(opcode: ubyte, instr: *const Instr) void
                instr_kind_to_str[instr.kind],
                cpu.a, cpu.x, cpu.y, get_status(false), cpu.sp,
                context.ppu.scanline, context.ppu.cycle % 341,
-               cpu.cycles);
+               cpu.total_cycles);
 
 }
 
-pub fn check_nmi() void
+fn nmi() void
 {
-    if cpu.nmi_pending {
-        cpu.nmi_pending = false;
-        stack_push16(cpu.pc);
-        // push status (with correct flags handling)
-        stack_push(get_status(false));
+    stack_push16(cpu.pc);
+    // push status (with correct flags handling)
+    stack_push(get_status(false));
 
-        // disable interrupts
-        cpu.status.i = true;
+    // disable interrupts
+    cpu.status.i = true;
 
-        // jump to NMI vector
-        cpu.pc = bus::read16(0xFFFA);
-        cpu.cycles += 7;
-    }
+    // jump to NMI vector
+    cpu.pc = bus::read16(0xFFFA);
+    cpu.current_cycles += 7;
 }
 
 fn resolve_operand(mode: AddrMode) Operand
@@ -182,7 +192,7 @@ fn resolve_operand(mode: AddrMode) Operand
         // emulate 6502 page boundary hardware bug
         const lo = bus::read(ptr);
         var hi_addr: ushort = void;
-        if (ptr & 0x00FF) != 0 {
+        if (ptr & 0x00FF) == 0x00FF {
             hi_addr = ptr & 0xFF00;
         } else {
             hi_addr = ptr + 1;
@@ -469,7 +479,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         todo(null);
     }
     if operand.page_crossed && instr.page_cross_penalty {
-        cpu.cycles++;
+        cpu.current_cycles++;
     }
 
 }
@@ -487,11 +497,9 @@ fn set_mem_or_acc(value: ubyte, operand: *const Operand, instr: *const Instr) vo
 fn branch_if_cond(cond: bool, operand: *const Operand) void
 {
     if cond {
-        if did_cross_page(cpu.pc, operand.addr) {
-            cpu.cycles++;
-        }
+        cpu.current_cycles += cast<ubyte>(did_cross_page(cpu.pc, operand.addr));
         cpu.pc = operand.addr;
-        cpu.cycles++;
+        cpu.current_cycles++;
     }
 }
 
@@ -557,12 +565,6 @@ fn get_status(break_flag: bool) ubyte
         (cast<ubyte>(cpu.status.v) << 6) |
         (cast<ubyte>(cpu.status.n) << 7);
 }
-
-pub fn cycle(count: uint) void
-{
-    cpu.cycles += count;
-}
-
 
 enum InstrKind : ubyte
 {

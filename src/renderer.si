@@ -54,8 +54,8 @@ pub fn render_scanline(scanline: ushort) void
         const tile_addr =
             pattern_base + cast<ushort>(tile_id) * 16;
 
-        const low  = context.rom!.chr[tile_addr + row_in_tile];
-        const high = context.rom!.chr[tile_addr + row_in_tile + 8];
+        const low  = context.cart!.chr[tile_addr + row_in_tile];
+        const high = context.cart!.chr[tile_addr + row_in_tile + 8];
 
         for col in 0..8 {
 
@@ -79,6 +79,7 @@ pub fn render_scanline(scanline: ushort) void
         }
     }
 }
+
 pub fn present_frame() void
 {
     var pixels: *void;
@@ -91,7 +92,9 @@ pub fn present_frame() void
         const row = cast<*[renderer.framebuffer[0].len]uint>(cast<uptr>(pixels) + (y * cast<usize>(pitch)));
 
         for x in 0..renderer.framebuffer[y].len {
-            row[x] = renderer.framebuffer[y][x];
+            const c = cast<uint>(renderer.framebuffer[y][x]);
+
+            row[x] = 0xFF000000 | (c << 16) | (c << 8) | c;
         }
     }
 

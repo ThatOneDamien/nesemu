@@ -4,7 +4,7 @@ import malloc;
 
 #const NES_CONSTANT: uint = 0x1A53454E;
 
-pub struct ROMHeader
+pub struct CartHeader
 {
     nes_constant: uint,
     prg_rom_size: ubyte,
@@ -17,14 +17,20 @@ pub struct ROMHeader
     reserved: [5]ubyte,
 }
 
-pub struct NesROM
+pub struct NesCart
 {
-    header: *ROMHeader,
-    prg: []ubyte,
-    chr: []ubyte,
+    header: *CartHeader,
+    mapper: *const Mapper,
+    prg: []const ubyte,
+    chr: []const ubyte,
 }
 
-pub fn NesROM.from_file(file_path: CString) ?NesROM
+pub struct Mapper
+{
+    
+}
+
+pub fn NesCart.from_file(file_path: CString) ?NesCart
 {
     const fd = io::open(file_path, io::O_RDONLY);
     if fd < 0 {
@@ -35,7 +41,7 @@ pub fn NesROM.from_file(file_path: CString) ?NesROM
     const sz = cast<usize>(io::lseek(fd, 0, io::SEEK_END));
     io::lseek(fd, 0, io::SEEK_SET);
 
-    const buf = cast<*ROMHeader>(malloc(sz));
+    const buf = cast<*CartHeader>(malloc(sz));
     io::read(fd, buf, sz);
     io::close(fd);
     const prg_size = cast<uint>(buf.prg_rom_size) * 0x4000;
@@ -46,14 +52,14 @@ pub fn NesROM.from_file(file_path: CString) ?NesROM
     }
 
     const data = cast<*[*]ubyte>(buf);
-    var prg_offset: usize = #sizeof(ROMHeader);
+    var prg_offset: usize = #sizeof(CartHeader);
     // io::printf("offset: %lu\n", prg_offset);
     if (buf.flags6 & 0x04) != 0 {
         prg_offset += 512;
     }
     const chr_offset = prg_offset + prg_size;
     // io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
-    return NesROM {
+    return NesCart {
         header: buf,
         prg: data[prg_offset..chr_offset],
         chr: data[chr_offset..chr_offset + chr_size],

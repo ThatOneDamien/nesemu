@@ -13,11 +13,10 @@ pub fn read(addr: ushort) ubyte
         const rom_addr = addr - 0x8000;
 
         // mirror if only 16KB PRG
-        if context.rom!.prg.len == 0x4000 {
-            return context.rom!.prg[rom_addr & 0x3FFF];
+        if context.cart!.prg.len == 0x4000 {
+            return context.cart!.prg[rom_addr & 0x3FFF];
         }
-
-        return context.rom!.prg[rom_addr];
+        return context.cart!.prg[rom_addr];
     }
     
     // 2KB RAM mirrored

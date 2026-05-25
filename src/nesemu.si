@@ -3,10 +3,10 @@ pub mod cpu;
 pub mod ppu;
 pub mod io;
 pub mod bus;
-pub mod rom;
+pub mod cart;
 pub mod renderer;
 
-import rom::NesROM;
+import cart::NesCart;
 
 pub typedef CString = *[*]const char;
 pub extern fn malloc(size: usize) *void;
@@ -21,7 +21,7 @@ pub struct EmuContext
     cpu: cpu::CPU,
     ppu: ppu::PPU,
     ram: [0x800]ubyte,
-    rom: ?NesROM,
+    cart: ?NesCart,
     renderer: renderer::Renderer,
     window: ?*sdl::Window,
     running: bool,
@@ -43,19 +43,20 @@ fn main(args: []CString) int
         return 1;
     }
 
-    context.rom = NesROM.from_file(args[1]);
-    if context.rom == null { return 1; }
-    cpu::reset();
+    context.cart = NesCart.from_file(args[1]);
+    if context.cart == null { return 1; }
+    cpu::power();
+    ppu::power();
     renderer::init(context.window!);
 
     context.running = true;
 
     while context.running {
-    // for _a in 0..8991 {
+    // for _a in 0..90000 {
         process_events();
-        const cycles: usize = cpu::step();
+        cpu::tick();
 
-        for _i in 0..cycles * 3 {
+        for _i in 0..3 {
             ppu::tick();
 
             if context.ppu.frame_ready {
@@ -63,8 +64,6 @@ fn main(args: []CString) int
                 context.ppu.frame_ready = false;
             }
         }
-
-        cpu::check_nmi();
     }
 
     sdl::DestroyWindow(context.window!);
