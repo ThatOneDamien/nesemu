@@ -7,18 +7,6 @@ import todo;
 @nodiscard
 pub fn read(addr: ushort) ubyte
 {
-    // Program ROM
-    if addr >= 0x8000 {
-    
-        const rom_addr = addr - 0x8000;
-
-        // mirror if only 16KB PRG
-        if context.cart!.prg.len == 0x4000 {
-            return context.cart!.prg[rom_addr & 0x3FFF];
-        }
-        return context.cart!.prg[rom_addr];
-    }
-    
     // 2KB RAM mirrored
     if addr < 0x2000 {
         return context.ram[addr & 0x7FF];
@@ -35,8 +23,7 @@ pub fn read(addr: ushort) ubyte
         return 0;
     }
     
-    todo("Cartridge RAM read.");
-    return 0;
+    return context.cart!.mapper.cpu_read(addr);
 }
 
 @nodiscard

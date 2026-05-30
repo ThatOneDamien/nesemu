@@ -232,7 +232,7 @@ fn write(addr: ushort, value: ubyte) void
 
     // Pattern tables (CHR ROM/RAM)
     if a < 0x2000 {
-        context.cart!.chr[a] = value;
+        // context.cart!.chr[a] = value;
         return;
     }
 

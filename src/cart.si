@@ -1,6 +1,8 @@
 import CString;
 import io;
 import malloc;
+import todo;
+import context;
 
 #const NES_CONSTANT: uint = 0x1A53454E;
 
@@ -20,14 +22,23 @@ pub struct CartHeader
 pub struct NesCart
 {
     header: *CartHeader,
-    mapper: *const Mapper,
+    mapper_kind: MapperKind,
+    mapper: Mapper,
     prg: []const ubyte,
     chr: []const ubyte,
 }
 
 pub struct Mapper
 {
-    
+    cpu_read: fn (ushort) ubyte,
+    cpu_write: fn (ushort, ubyte) void,
+    ppu_read: fn (ushort) ubyte,
+    ppu_write: fn(ushort, ubyte) void,
+}
+
+pub enum MapperKind : ubyte
+{
+    NROM,
 }
 
 pub fn NesCart.from_file(file_path: CString) ?NesCart
@@ -41,27 +52,53 @@ pub fn NesCart.from_file(file_path: CString) ?NesCart
     const sz = cast<usize>(io::lseek(fd, 0, io::SEEK_END));
     io::lseek(fd, 0, io::SEEK_SET);
 
-    const buf = cast<*CartHeader>(malloc(sz));
-    io::read(fd, buf, sz);
+    const header = cast<*CartHeader>(malloc(sz));
+    io::read(fd, header, sz);
     io::close(fd);
-    const prg_size = cast<uint>(buf.prg_rom_size) * 0x4000;
-    const chr_size = cast<uint>(buf.chr_rom_size) * 0x2000;
-    if buf.nes_constant != NES_CONSTANT {
+    const prg_size = cast<uint>(header.prg_rom_size) * 0x4000;
+    const chr_size = cast<uint>(header.chr_rom_size) * 0x2000;
+    if header.nes_constant != NES_CONSTANT {
         io::printf("Rom \'%s\' was detected to be invalid.\n", file_path);
         return null;
     }
 
-    const data = cast<*[*]ubyte>(buf);
+    const data = cast<*[*]ubyte>(header);
     var prg_offset: usize = #sizeof(CartHeader);
     // io::printf("offset: %lu\n", prg_offset);
-    if (buf.flags6 & 0x04) != 0 {
+    if (header.flags6 & 0x04) != 0 {
         prg_offset += 512;
     }
     const chr_offset = prg_offset + prg_size;
+    const mapper_num = (header.flags7 & 0xF0) | (header.flags6 >> 4);
     // io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
     return NesCart {
-        header: buf,
+        header: header,
+        mapper_kind: cast<MapperKind>(mapper_num),
+        mapper: mappers[mapper_num],
         prg: data[prg_offset..chr_offset],
         chr: data[chr_offset..chr_offset + chr_size],
     };
 }
+
+fn nrom_cpu_read(addr: ushort) ubyte
+{
+    if addr >= 0x8000 {
+        var final: ushort = addr - 0x8000;
+        if context.cart!.prg.len == 0x4000 {
+            final &= 0x3FFF;
+        }
+        return context.cart!.prg[final];
+    }
+
+    todo(null);
+    return 0;
+}
+
+fn nrom_ppu_read(addr: ushort) ubyte
+{
+
+}
+
+const mappers: [#type_max(MapperKind) - #type_min(MapperKind) + 1]Mapper = [
+    MapperKind.NROM: Mapper{ cpu_read: &nrom_cpu_read, },
+];
