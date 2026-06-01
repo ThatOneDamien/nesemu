@@ -3,6 +3,7 @@ import ppu;
 import io;
 import context;
 import todo;
+import controller;
 
 @nodiscard
 pub fn read(addr: ushort) ubyte
@@ -17,9 +18,11 @@ pub fn read(addr: ushort) ubyte
         return ppu::read_register(addr & 0x7);
     }
 
+    if addr == 0x4016 {
+        return controller::read_4016();
+    }
         // APU + IO
     if addr < 0x4020 {
-        todo("APU + IO read");
         return 0;
     }
     
@@ -47,9 +50,18 @@ pub fn write(addr: ushort, value: ubyte) void
         return;
     }
 
+    if addr == 0x4014 {
+        ppu::oam_dma(value);
+        return;
+    }
+
+    if addr == 0x4016 {
+        controller::write_4016(value);
+        return;
+    }
+
         // APU + IO
     if addr < 0x4020 {
-        todo("APU + IO write");
         return;
     }
 

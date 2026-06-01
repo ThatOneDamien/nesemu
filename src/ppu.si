@@ -1,6 +1,7 @@
 import context;
 import io;
 import renderer;
+import bus;
 
 pub struct PPU
 {
@@ -25,6 +26,18 @@ pub struct PPU
     oam: [256]ubyte,
     vram: [0x4000]ubyte,
     palette: [32]ubyte,
+
+    scanline_sprites: [8]Sprite,
+    sprite_count: uint,
+}
+
+pub struct Sprite
+{
+    y: ubyte,
+    tile: ubyte,
+    attr: ubyte,
+    x: ubyte,
+    oam_index: ulong,
 }
 
 enum PPURegister : ushort
@@ -59,12 +72,12 @@ pub fn tick() void
     ppu.cycle += 1;
 
     if ppu.cycle >= 341 {
-        ppu.cycle = 0;
-        ppu.scanline++;
-
-        if ppu.scanline <= 240 {
+        if ppu.scanline < 240 {
             renderer::render_scanline(ppu.scanline);
         }
+
+        ppu.cycle = 0;
+        ppu.scanline++;
 
         if ppu.scanline > PRE_RENDER_SCANLINE {
             ppu.scanline = 0;
@@ -76,12 +89,12 @@ pub fn tick() void
             // ENTER VBLANK
             ppu.status |= 0x80; // set VBlank flag
 
-            if (ppu.ctrl & 0x80) != 0 {
+            if (ppu.ctrl & 0x80) == 0x80 {
                 context.cpu.nmi_pending = true;
             }
         } else if ppu.scanline == PRE_RENDER_SCANLINE {
             // EXIT VBLANK (pre-render line)
-            ppu.status &= ~cast<ubyte>(0x80);
+            ppu.status &= ~cast<ubyte>(0xC0);
         }
     }
 }
@@ -207,6 +220,15 @@ pub fn write_register(addr: ushort, value: ubyte) void
     }
 }
 
+pub fn oam_dma(page: ubyte) void
+{
+    const base = cast<ushort>(page) << 8;
+
+    for i in 0..256 {
+        ppu.oam[(ppu.oam_addr + i) & 0xFF] = bus::read(base + cast<ushort>(i));
+    }
+}
+
 @nodiscard
 fn read(addr: ushort) ubyte
 {
@@ -214,16 +236,17 @@ fn read(addr: ushort) ubyte
 
     // Pattern tables (CHR ROM/RAM)
     if a < 0x2000 {
-        return context.cart!.chr[a];
+        return context.cart!.mapper.ppu_read(addr);
     }
 
     // Nametables
     if a < 0x3F00 {
-        return ppu.vram[a & 0x0FFF];
+        const mirrored = context.cart!.mapper.mirror_vram_addr(a);
+        return ppu.vram[mirrored];
     }
 
     // Palette RAM mirrors every 32 bytes, and some special mirroring rules later
-    return ppu.palette[a & 0x001F];
+    return ppu.palette[palette_mirror(a)];
 }
 
 fn write(addr: ushort, value: ubyte) void
@@ -232,16 +255,28 @@ fn write(addr: ushort, value: ubyte) void
 
     // Pattern tables (CHR ROM/RAM)
     if a < 0x2000 {
-        // context.cart!.chr[a] = value;
+        context.cart!.mapper.ppu_write(addr, value);
         return;
     }
 
     // Nametables
     if a < 0x3F00 {
-        ppu.vram[a & 0x0FFF] = value;
+        const mirrored = context.cart!.mapper.mirror_vram_addr(a);
+        ppu.vram[mirrored] = value;
         return;
     }
 
     // Palette RAM mirrors every 32 bytes, and some special mirroring rules later
-    ppu.palette[a & 0x001F] = value;
+    ppu.palette[palette_mirror(a)] = value;
+}
+
+fn palette_mirror(addr: ushort) ushort
+{
+    var pal = addr & 0x1F;
+
+    if pal == 0x10 { pal = 0x00; }
+    if pal == 0x14 { pal = 0x04; }
+    if pal == 0x18 { pal = 0x08; }
+    if pal == 0x1C { pal = 0x0C; }
+    return pal;
 }

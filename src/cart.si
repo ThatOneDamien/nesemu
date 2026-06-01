@@ -34,6 +34,7 @@ pub struct Mapper
     cpu_write: fn (ushort, ubyte) void,
     ppu_read: fn (ushort) ubyte,
     ppu_write: fn(ushort, ubyte) void,
+    mirror_vram_addr: fn(ushort) ushort,
 }
 
 pub enum MapperKind : ubyte
@@ -94,11 +95,46 @@ fn nrom_cpu_read(addr: ushort) ubyte
     return 0;
 }
 
-fn nrom_ppu_read(addr: ushort) ubyte
+fn nrom_cpu_write(_addr: ushort, _value: ubyte) void 
 {
 
 }
 
+fn nrom_ppu_read(addr: ushort) ubyte
+{
+    // CHR ROM/RAM is mapped directly
+    if addr < 0x2000 {
+        return context.cart!.chr[addr];
+    }
+
+    return 0;
+}
+
+fn nrom_ppu_write(_addr: ushort, _value: ubyte) void 
+{
+
+}
+
+fn nrom_mirror_vram_addr(addr: ushort) ushort
+{
+    const nt_addr = (addr - 0x2000) & 0x0FFF;
+    const vertical = (context.cart!.header.flags6 & 0x1) == 0x1;
+    if vertical {
+        return nt_addr & 0x7FF;
+    }
+
+    const table = nt_addr / 0x400;
+    const offset = nt_addr & 0x3FF;
+
+    switch table {
+    case 0: return offset;
+    case 1: return offset;
+    case 2: return 0x400 + offset;
+    case 3: return 0x400 + offset;
+    }
+    return 0;
+}
+
 const mappers: [#type_max(MapperKind) - #type_min(MapperKind) + 1]Mapper = [
-    MapperKind.NROM: Mapper{ cpu_read: &nrom_cpu_read, },
+    MapperKind.NROM: Mapper{ cpu_read: &nrom_cpu_read, cpu_write: &nrom_cpu_write, ppu_read: &nrom_ppu_read, ppu_write: &nrom_ppu_write, mirror_vram_addr: &nrom_mirror_vram_addr},
 ];
