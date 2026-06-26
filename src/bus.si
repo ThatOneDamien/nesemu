@@ -40,6 +40,7 @@ pub fn power() void
 pub fn clock() void
 {
     ppu::clock();
+
     if bus.system_clock % 3 == 0 
     {
         if bus.dma_transfer 
@@ -70,8 +71,11 @@ pub fn clock() void
 
             }
         }
-        cpu::clock();
-        apu::clock();
+        else 
+        {
+            cpu::clock();
+            apu::clock();
+        }
     }
 
     if context.cpu.nmi_pending {
@@ -159,6 +163,7 @@ pub fn write(addr: ushort, value: ubyte) void
 
         // APU + IO
     if addr < 0x4020 {
+        apu::write(addr & 0x1F, value);
         return;
     }
 
