@@ -24,8 +24,29 @@ pub struct NesCart
     header: *CartHeader,
     mapper_kind: MapperKind,
     mapper: Mapper,
+    data: MapperData,
+
     prg: []const ubyte,
-    chr: []const ubyte,
+    chr: []ubyte,
+    sram: ?[]ubyte,
+}
+
+pub union MapperData
+{
+    mmc1: MMC1Data,
+}
+
+pub struct MMC1Data
+{
+    shift: ubyte,
+    shift_count: ubyte,
+
+    control: ubyte,
+    chr_bank0: ubyte,
+    chr_bank1: ubyte,
+    prg_bank: ubyte,
+
+    prg_ram_enable: bool,
 }
 
 pub struct Mapper
@@ -39,7 +60,8 @@ pub struct Mapper
 
 pub enum MapperKind : ubyte
 {
-    NROM,
+    NROM = 0,
+    MMC1 = 1,
 }
 
 pub fn NesCart.from_file(file_path: CString) ?NesCart
@@ -56,6 +78,7 @@ pub fn NesCart.from_file(file_path: CString) ?NesCart
     const header = cast<*CartHeader>(malloc(sz));
     io::read(fd, header, sz);
     io::close(fd);
+    const chr_ram = header.chr_rom_size == 0;
     const prg_size = cast<uint>(header.prg_rom_size) * 0x4000;
     const chr_size = cast<uint>(header.chr_rom_size) * 0x2000;
     if header.nes_constant != NES_CONSTANT {
@@ -65,19 +88,30 @@ pub fn NesCart.from_file(file_path: CString) ?NesCart
 
     const data = cast<*[*]ubyte>(header);
     var prg_offset: usize = #sizeof(CartHeader);
-    // io::printf("offset: %lu\n", prg_offset);
+
+
     if (header.flags6 & 0x04) != 0 {
         prg_offset += 512;
     }
+
     const chr_offset = prg_offset + prg_size;
+    const sram: ?*[0x2000]ubyte = if (header.flags6 & 0x02) != 0 => malloc(0x2000) else => null;
     const mapper_num = (header.flags7 & 0xF0) | (header.flags6 >> 4);
     // io::printf("Successfully loaded rom '%s' PRG_SIZE: %u  CHR_SIZE: %u\n", file_path, prg_size, chr_size);
+    if mapper_num > #type_max(MapperKind) {
+        io::printf("Mapper %u not yet implemented.\n", mapper_num);
+        return null;
+    }
+    else {
+        io::printf("Mapper %u supported! Loading cartridge for '%s'\n", mapper_num, file_path);
+    }
     return NesCart {
         header: header,
         mapper_kind: cast<MapperKind>(mapper_num),
         mapper: mappers[mapper_num],
         prg: data[prg_offset..chr_offset],
-        chr: data[chr_offset..chr_offset + chr_size],
+        chr: if chr_ram => cast<*[*]ubyte>(malloc(0x8000))[0..0x8000] else => data[chr_offset..chr_offset + chr_size],
+        sram: if sram == null => null else => sram![0..0x2000],
     };
 }
 
@@ -90,14 +124,20 @@ fn nrom_cpu_read(addr: ushort) ubyte
         }
         return context.cart!.prg[final];
     }
+    else if addr >= 0x6000 && context.cart!.sram != null {
+        return context.cart!.sram![addr - 0x6000];
+    }
 
-    todo(null);
-    return 0;
+    io::printf("ERROR: Bad read. (Address 0x%.4hx)\n", addr);
+    return 0xFF;
 }
 
-fn nrom_cpu_write(_addr: ushort, _value: ubyte) void 
+fn nrom_cpu_write(addr: ushort, value: ubyte) void 
 {
-
+    if addr >= 0x6000 && addr < 0x8000 && context.cart!.sram != null {
+        context.cart!.sram![addr - 0x6000] = value;
+    }
+    io::printf("ERROR: Bad write. (Address 0x%.4hx)\n", addr);
 }
 
 fn nrom_ppu_read(addr: ushort) ubyte
@@ -135,6 +175,146 @@ fn nrom_mirror_vram_addr(addr: ushort) ushort
     return 0;
 }
 
+fn mmc1_cpu_read(addr: ushort) ubyte
+{
+    const data: *MMC1Data = &context.cart!.data.mmc1;
+    if addr >= 0x8000 {
+
+        var offset: uint = 0;
+
+        const prg_size = cast<uint>(context.cart!.prg.len);
+
+        switch (data.control >> 2) & 0x03 {
+
+        // -------------------------
+        // 32KB mode
+        // -------------------------
+        case 0:
+        case 1:
+            const bank = (data.prg_bank >> 1) & ((prg_size / 0x8000) - 1);
+            offset = (addr - 0x8000) + (bank * 0x8000);
+
+        // -------------------------
+        // Fix first 16KB, switch last
+        // -------------------------
+        case 2:
+            if addr < 0xC000 {
+                offset = addr - 0x8000;
+            } else {
+                offset = (data.prg_bank * 0x4000) + (addr - 0xC000);
+            }
+
+        // -------------------------
+        // Switch first, fix last 16KB
+        // -------------------------
+        case 3:
+            if addr < 0xC000 {
+                offset = (data.prg_bank * 0x4000) + (addr - 0x8000);
+            } else {
+                offset = (prg_size - 0x4000) + (addr - 0xC000);
+            }
+        }
+
+        return context.cart!.prg[offset];
+    }
+    else if addr >= 0x6000 {
+        if context.cart!.sram!.len == 0 {
+            return 0; // or open bus
+        }
+        return context.cart!.sram![addr - 0x6000];
+    }
+
+    // -------------------------
+    // invalid range
+    // -------------------------
+    return 0;
+}
+
+pub fn mmc1_cpu_write(_addr: ushort, value: ubyte) void
+{
+    const data: *MMC1Data = &context.cart!.data.mmc1;
+    if (value & 0x80) == 0x80 {
+        data.shift = 0x10;        // reset to 10000
+        data.shift_count = 0;
+        data.control |= 0x0C;     // default PRG mode behavior
+        return;
+    }
+
+    data.shift >>= 1;
+    data.shift |= (value & 1) << 4;
+    data.shift_count++;
+
+    if (data.shift_count == 5) {
+        // commit_register(addr, shift);
+        data.shift = 0x10;
+        data.shift_count = 0;
+    }
+}
+
+fn mmc1_ppu_read(addr: ushort) ubyte
+{
+    if addr >= 0x2000 {
+        return 0;
+    }
+
+    const data: *MMC1Data = &context.cart!.data.mmc1;
+    var offset: uint;
+
+    if (data.control & 0x10) == 0
+    {
+        // 8 KB mode
+        const bank = data.chr_bank0 & 0x1E;
+        offset = cast<uint>(bank) * 0x1000 + addr;
+    }
+    else
+    {
+        // 4 KB mode
+        if addr < 0x1000 {
+            offset = cast<uint>(data.chr_bank0) * 0x1000 + addr;
+        } else {
+            offset = cast<uint>(data.chr_bank1) * 0x1000 + (addr - 0x1000);
+        }
+    }
+
+    return context.cart!.chr[offset];
+}
+
+fn mmc1_ppu_write(addr: ushort, value: ubyte) void
+{
+    if addr >= 0x2000 {
+        return;
+    }
+
+    // CHR ROM is read-only.
+    if context.cart!.header.chr_rom_size != 0 {
+        return;
+    }
+
+    const mmc1 = &context.cart!.data.mmc1;
+
+    var offset: ushort;
+
+    if (mmc1.control & 0x10) == 0
+    {
+        // 8 KB CHR banking
+        const bank = mmc1.chr_bank0 & 0x1E;
+        offset = cast<ushort>(bank) * 0x1000 + addr;
+    }
+    else
+    {
+        // 4 KB CHR banking
+        if addr < 0x1000 {
+            offset = cast<ushort>(mmc1.chr_bank0) * 0x1000 + addr;
+        }
+        else {
+            offset = cast<ushort>(mmc1.chr_bank1) * 0x1000 + (addr - 0x1000);
+        }
+    }
+
+    context.cart!.chr[offset] = value;
+}
+
 const mappers: [#type_max(MapperKind) - #type_min(MapperKind) + 1]Mapper = [
     MapperKind.NROM: Mapper{ cpu_read: &nrom_cpu_read, cpu_write: &nrom_cpu_write, ppu_read: &nrom_ppu_read, ppu_write: &nrom_ppu_write, mirror_vram_addr: &nrom_mirror_vram_addr},
+    MapperKind.MMC1: Mapper{ cpu_read: &mmc1_cpu_read, cpu_write: &mmc1_cpu_write, ppu_read: &mmc1_ppu_read, ppu_write: &mmc1_ppu_write, mirror_vram_addr: &nrom_mirror_vram_addr},
 ];

@@ -12,4 +12,5 @@ pub extern fn open(path: CString, flags: int, ...) int;
 pub extern fn close(fd: int) int;
 pub extern fn read(fd: int, buf: *void, count: usize) isize;
 pub extern fn lseek(fd: int, offset: isize, whence: int) isize;
-pub extern fn memcpy(dst: *void, src: *const void, size: usize) void;
+pub extern fn memcpy(dst: *void, src: *const void, size: usize) *void;
+pub extern fn memset(s: *void, val: ubyte, size: usize) *void;

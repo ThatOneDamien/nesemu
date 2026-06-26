@@ -1,9 +1,87 @@
+import apu;
 import cpu;
 import ppu;
 import io;
 import context;
 import todo;
-import controller;
+import sdl;
+
+pub struct Bus
+{
+    controllers: [2]Controller,
+
+	system_clock: uint,
+	dma_page: ubyte,
+	dma_addr: ubyte,
+	dma_data: ubyte,
+	dma_dummy: bool,
+	dma_transfer: bool,
+}
+
+pub struct Controller
+{
+    state: ubyte, // current buttons
+    shift: ubyte, // latched state being shifted out
+    strobe: bool,
+}
+
+#const bus = &context.bus;
+
+pub fn power() void
+{
+	bus.system_clock = 0;
+	bus.dma_page = 0x00;
+	bus.dma_addr = 0x00;
+	bus.dma_data = 0x00;
+	bus.dma_dummy = true;
+	bus.dma_transfer = false;
+}
+
+pub fn clock() void
+{
+    ppu::clock();
+    if bus.system_clock % 3 == 0 
+    {
+        if bus.dma_transfer 
+        {
+            if bus.dma_dummy 
+            {
+				if bus.system_clock % 2 == 1 
+                {
+					bus.dma_dummy = false;
+				}
+            }
+            else 
+            {
+				if (bus.system_clock % 2 == 0)
+				{
+					bus.dma_data = read(cast<ushort>(bus.dma_page) << 8 | bus.dma_addr);
+				}
+				else
+				{
+					ppu::oam_ptr[bus.dma_addr] = bus.dma_data;
+					bus.dma_addr++;
+					if (bus.dma_addr == 0x00)
+					{
+						bus.dma_transfer = false;
+						bus.dma_dummy = true;
+					}
+				}
+
+            }
+        }
+        cpu::clock();
+        apu::clock();
+    }
+
+    if context.cpu.nmi_pending {
+        cpu::nmi();
+        context.cpu.nmi_pending = false;
+    }
+    
+    bus.system_clock++;
+}
+
 
 @nodiscard
 pub fn read(addr: ushort) ubyte
@@ -17,13 +95,24 @@ pub fn read(addr: ushort) ubyte
     if addr < 0x4000 {
         return ppu::read_register(addr & 0x7);
     }
-
+    
+    if addr == 0x4015 {
+        return apu::read_status();
+    }
     if addr == 0x4016 {
-        return controller::read_4016();
+        const ret = bus.controllers[0].shift & 1;
+        bus.controllers[0].shift >>= 1;
+        return ret;
+    }
+    if addr == 0x4017 {
+        const ret = bus.controllers[1].shift & 1;
+        bus.controllers[1].shift >>= 1;
+        return ret;
     }
         // APU + IO
     if addr < 0x4020 {
-        return 0;
+        io::printf("ERROR: Bad read.");
+        return 0xFF;
     }
     
     return context.cart!.mapper.cpu_read(addr);
@@ -51,12 +140,20 @@ pub fn write(addr: ushort, value: ubyte) void
     }
 
     if addr == 0x4014 {
-        ppu::oam_dma(value);
+		bus.dma_page = value;
+		bus.dma_addr = 0x00;
+		bus.dma_transfer = true;						
         return;
     }
 
     if addr == 0x4016 {
-        controller::write_4016(value);
+        const new_strobe: bool = (value & 1) == 1;
+
+        if (bus.controllers[0].strobe && !new_strobe) {
+            bus.controllers[0].shift = bus.controllers[0].state;
+        }
+
+        bus.controllers[0].strobe = new_strobe;
         return;
     }
 
@@ -65,5 +162,5 @@ pub fn write(addr: ushort, value: ubyte) void
         return;
     }
 
-    io::printf("Attempted to write to prg rom.");
+    context.cart!.mapper.cpu_write(addr, value);
 }

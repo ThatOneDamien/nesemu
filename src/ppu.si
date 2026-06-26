@@ -19,25 +19,41 @@ pub struct PPU
     data_buffer: ubyte,
 
     cycle: ulong,
-    scanline: ushort,
-    frame: ulong,
+    scanline: Scanline,
     frame_ready: bool,
 
-    oam: [256]ubyte,
+    system_palette: [64]uint,
+    oam: [64]ObjectAttributeEntry,
     vram: [0x4000]ubyte,
     palette: [32]ubyte,
 
-    scanline_sprites: [8]Sprite,
-    sprite_count: uint,
+    // Background rendering
+	bg_next_tile_id: ubyte,
+	bg_next_tile_attrib: ubyte,
+	bg_next_tile_lsb: ubyte,
+	bg_next_tile_msb: ubyte,
+	bg_shifter_pattern_lo: ushort,
+	bg_shifter_pattern_hi: ushort,
+	bg_shifter_attrib_lo: ushort,
+	bg_shifter_attrib_hi: ushort,
+
+    sprite_scanline: [8]ObjectAttributeEntry,
+    sprite_count: ubyte,
+    sprite_shifter_pattern_lo: [8]ubyte,
+    sprite_shifter_pattern_hi: [8]ubyte,
+
+    sprite_zero_hit_possible: bool,
+    sprite_zero_being_rendered: bool,
 }
 
-pub struct Sprite
+pub #const oam_ptr: *[256]ubyte = cast<*[256]ubyte>(&context.ppu.oam);
+
+pub struct ObjectAttributeEntry
 {
     y: ubyte,
     tile: ubyte,
     attr: ubyte,
     x: ubyte,
-    oam_index: ulong,
 }
 
 enum PPURegister : ushort
@@ -53,9 +69,17 @@ enum PPURegister : ushort
     OAM_DMA,
 }
 
+pub enum Scanline : ushort
+{
+    PreRender = 0,
+    VisibleStart = 1,
+    VisibleEnd = 240,
+    PostRender = 241,
+    VBlankStart = 242,
+    VBlankEnd = 261,
+}
+
 #const ppu = &context.ppu;
-#const VBLANK_SCANLINE: ushort = 241;
-#const PRE_RENDER_SCANLINE: ushort = 261;
 
 pub fn power() void
 {
@@ -63,39 +87,361 @@ pub fn power() void
     ppu.mask = 0x00;
     ppu.status = 0xA0;
     ppu.oam_addr = 0x00;
+    ppu.v = 0;
+    ppu.t = 0;
+    ppu.x = 0;
     ppu.w = false;
-    ppu.cycle = 21;
+    for i in 0..21 {
+        clock();
+    }
 }
 
-pub fn tick() void
+pub fn clock() void
 {
-    ppu.cycle += 1;
-
-    if ppu.cycle >= 341 {
-        if ppu.scanline < 240 {
-            renderer::render_scanline(ppu.scanline);
-        }
-
-        ppu.cycle = 0;
-        ppu.scanline++;
-
-        if ppu.scanline > PRE_RENDER_SCANLINE {
-            ppu.scanline = 0;
-            ppu.frame++;
-            ppu.frame_ready = true;
-        }
-    } else if ppu.cycle == 1 {
-        if ppu.scanline == VBLANK_SCANLINE {
-            // ENTER VBLANK
-            ppu.status |= 0x80; // set VBlank flag
-
-            if (ppu.ctrl & 0x80) == 0x80 {
-                context.cpu.nmi_pending = true;
+    const scanline_adjusted: ushort = cast<ushort>(ppu.scanline) - 1;
+	if ppu.scanline <= .VisibleEnd // Visible lines
+	{		
+		if ppu.scanline == .VisibleStart && ppu.cycle == 0
+		{
+			// Odd Frame cycle skip
+			ppu.cycle = 1;
+		}
+        else if ppu.scanline == .PreRender && ppu.cycle == 1
+        {
+            // Clear Vblank, sprite 0 hit, and sprite overflow.
+            ppu.status &= 0x1F;
+            for i in 0..8 {
+                ppu.sprite_shifter_pattern_lo[i] = 0;
+                ppu.sprite_shifter_pattern_hi[i] = 0;
             }
-        } else if ppu.scanline == PRE_RENDER_SCANLINE {
-            // EXIT VBLANK (pre-render line)
-            ppu.status &= ~cast<ubyte>(0xC0);
         }
+
+		if (ppu.cycle >= 2 && ppu.cycle < 258) || (ppu.cycle >= 321 && ppu.cycle < 338)
+		{
+            update_shifters();
+			
+			switch ((ppu.cycle - 1) % 8)
+			{
+			case 0:
+                load_background_shifters();
+				ppu.bg_next_tile_id = read(0x2000 | (ppu.v & 0x0FFF));
+                if ppu.cycle == 257
+                {
+                    transfer_address_x();
+                    if(ppu.scanline >= .VisibleStart)
+                    {
+                        
+                        io::memset(&ppu.sprite_scanline, 0xFF, #sizeof(#typeof(ppu.sprite_scanline)));
+
+                        ppu.sprite_count = 0;
+
+                        for i in 0..8 {
+                            ppu.sprite_shifter_pattern_lo[i] = 0;
+                            ppu.sprite_shifter_pattern_hi[i] = 0;
+                        }
+
+                        var oam_entry: ubyte = 0;
+
+                        ppu.sprite_zero_hit_possible = false;
+
+                        while oam_entry < 64 && ppu.sprite_count < 9
+                        {
+                            const diff = cast<short>(scanline_adjusted) - cast<short>(ppu.oam[oam_entry].y);
+
+                            
+                            if (diff >= 0 && diff < if (ppu.ctrl & 0x20) == 0x20 => 16 else => 8)
+                            {
+                                if ppu.sprite_count < 8
+                                {
+                                    if oam_entry == 0
+                                    {
+                                        ppu.sprite_zero_hit_possible = true;
+                                    }
+
+                                    ppu.sprite_scanline[ppu.sprite_count] = ppu.oam[oam_entry];
+                                    ppu.sprite_count++;
+                                }				
+                            }
+
+                            oam_entry++;
+                        } // End of sprite evaluation for next scanline
+
+                        ppu.status |= cast<ubyte>(ppu.sprite_count > 8) << 5;
+                    }
+                }
+			case 2:
+				ppu.bg_next_tile_attrib = read(0x23C0 | (ppu.v & 0x0C00) | ((ppu.v >> 4) & 0x38) | ((ppu.v >> 2) & 0x07));
+				if (ppu.v & 0x40) == 0x40 { ppu.bg_next_tile_attrib >>= 4; }
+				if (ppu.v & 0x02) == 0x02 { ppu.bg_next_tile_attrib >>= 2; }
+				ppu.bg_next_tile_attrib &= 0x03;
+			case 4: 
+				ppu.bg_next_tile_lsb = read(cast<ushort>(ppu.ctrl & 0x10) << 8 
+					                       + (cast<ushort>(ppu.bg_next_tile_id) << 4) 
+					                       + ((ppu.v >> 12) & 7));
+
+			case 6:
+				ppu.bg_next_tile_msb = read(cast<ushort>(ppu.ctrl & 0x10) << 8
+					                       + (cast<ushort>(ppu.bg_next_tile_id) << 4)
+					                       + ((ppu.v >> 12) & 7) + 8);
+			case 7:
+                increment_scroll_x();
+                if ppu.cycle == 256
+                {
+                    increment_scroll_y();
+                }
+			}
+		}
+		else if ppu.cycle == 338
+		{
+            // Superfluous reads of tile id at end of scanline
+			ppu.bg_next_tile_id = read(0x2000 | (ppu.v & 0x0FFF));
+		}
+        else if ppu.cycle == 340
+        {
+            // Superfluous reads of tile id at end of scanline
+			ppu.bg_next_tile_id = read(0x2000 | (ppu.v & 0x0FFF));
+
+			for i in 0..ppu.sprite_count
+			{
+                var sprite_pattern_bits_lo: ubyte;
+                var sprite_pattern_bits_hi: ubyte;
+                var sprite_pattern_addr_lo: ushort;
+                var sprite_pattern_addr_hi: ushort;
+
+				if (ppu.ctrl & 0x20) == 0
+				{
+					// 8x8 Sprite Mode - The control register determines the pattern table
+					if (ppu.sprite_scanline[i].attr & 0x80) == 0
+					{
+						// Sprite is NOT flipped vertically, i.e. normal    
+						sprite_pattern_addr_lo = 
+						  (cast<ushort>(ppu.ctrl & 0x08) << 9)  // Which Pattern Table? 0KB or 4KB offset
+						| (cast<ushort>(ppu.sprite_scanline[i].tile) << 4)  // Which Cell? Tile ID * 16 (16 bytes per tile)
+						| (scanline_adjusted - ppu.sprite_scanline[i].y); // Which Row in cell? (0->7)
+												
+					}
+					else
+					{
+						// Sprite is flipped vertically, i.e. upside down
+						sprite_pattern_addr_lo = 
+						  (cast<ushort>(ppu.ctrl & 0x08) << 9)  // Which Pattern Table? 0KB or 4KB offset
+						| (cast<ushort>(ppu.sprite_scanline[i].tile) << 4)  // Which Cell? Tile ID * 16 (16 bytes per tile)
+						| (7 - (scanline_adjusted - ppu.sprite_scanline[i].y)); // Which Row in cell? (7->0)
+					}
+
+				}
+				else
+				{
+					// 8x16 Sprite Mode - The sprite attribute determines the pattern table
+					if (ppu.sprite_scanline[i].attr & 0x80) == 0
+					{
+						// Sprite is NOT flipped vertically, i.e. normal
+						if scanline_adjusted - ppu.sprite_scanline[i].y < 8
+						{
+							// Reading Top half Tile
+							sprite_pattern_addr_lo = 
+							  (cast<ushort>(ppu.sprite_scanline[i].tile & 0x01)      << 12)  // Which Pattern Table? 0KB or 4KB offset
+							| (cast<ushort>(ppu.sprite_scanline[i].tile & 0xFE)      << 4 )  // Which Cell? Tile ID * 16 (16 bytes per tile)
+							| ((scanline_adjusted - ppu.sprite_scanline[i].y) & 0x07); // Which Row in cell? (0->7)
+						}
+						else
+						{
+							// Reading Bottom Half Tile
+							sprite_pattern_addr_lo = 
+							  (cast<ushort>(ppu.sprite_scanline[i].tile & 0x01)       << 12)  // Which Pattern Table? 0KB or 4KB offset
+							| ((cast<ushort>(ppu.sprite_scanline[i].tile & 0xFE) + 1) << 4 )  // Which Cell? Tile ID * 16 (16 bytes per tile)
+							| ((scanline_adjusted - ppu.sprite_scanline[i].y) & 0x07); // Which Row in cell? (0->7)
+						}
+					}
+					else
+					{
+						// Sprite is flipped vertically, i.e. upside down
+						if scanline_adjusted - ppu.sprite_scanline[i].y < 8
+						{
+							// Reading Top half Tile
+							sprite_pattern_addr_lo = 
+							  (cast<ushort>(ppu.sprite_scanline[i].tile & 0x01)      << 12)  // Which Pattern Table? 0KB or 4KB offset
+							| (cast<ushort>(ppu.sprite_scanline[i].tile & 0xFE)      << 4 )  // Which Cell? Tile ID * 16 (16 bytes per tile)
+							| (7 - (scanline_adjusted - ppu.sprite_scanline[i].y) & 0x07); // Which Row in cell? (0->7)
+						}
+						else
+						{
+							// Reading Bottom Half Tile
+							sprite_pattern_addr_lo = 
+							  (cast<ushort>(ppu.sprite_scanline[i].tile & 0x01)       << 12)  // Which Pattern Table? 0KB or 4KB offset
+							| ((cast<ushort>(ppu.sprite_scanline[i].tile & 0xFE) + 1) << 4 )  // Which Cell? Tile ID * 16 (16 bytes per tile)
+							| (7 - (scanline_adjusted - ppu.sprite_scanline[i].y) & 0x07); // Which Row in cell? (0->7)
+						}
+					}
+				}
+
+				// Phew... XD I'm absolutely certain you can use some fantastic bit 
+				// manipulation to reduce all of that to a few one liners, but in this
+				// form it's easy to see the processes required for the different
+				// sizes and vertical orientations
+
+				// Hi bit plane equivalent is always offset by 8 bytes from lo bit plane
+				sprite_pattern_addr_hi = sprite_pattern_addr_lo + 8;
+
+				// Now we have the address of the sprite patterns, we can read them
+				sprite_pattern_bits_lo = read(sprite_pattern_addr_lo);
+				sprite_pattern_bits_hi = read(sprite_pattern_addr_hi);
+
+				// If the sprite is flipped horizontally, we need to flip the 
+				// pattern bytes. 
+				if (ppu.sprite_scanline[i].attr & 0x40) == 0x40
+				{
+                    sprite_pattern_bits_lo = (sprite_pattern_bits_lo & 0xF0) >> 4 | (sprite_pattern_bits_lo & 0x0F) << 4;
+                    sprite_pattern_bits_lo = (sprite_pattern_bits_lo & 0xCC) >> 2 | (sprite_pattern_bits_lo & 0x33) << 2;
+                    sprite_pattern_bits_lo = (sprite_pattern_bits_lo & 0xAA) >> 1 | (sprite_pattern_bits_lo & 0x55) << 1;
+
+                    sprite_pattern_bits_hi = (sprite_pattern_bits_hi & 0xF0) >> 4 | (sprite_pattern_bits_hi & 0x0F) << 4;
+                    sprite_pattern_bits_hi = (sprite_pattern_bits_hi & 0xCC) >> 2 | (sprite_pattern_bits_hi & 0x33) << 2;
+                    sprite_pattern_bits_hi = (sprite_pattern_bits_hi & 0xAA) >> 1 | (sprite_pattern_bits_hi & 0x55) << 1;
+				}
+
+				ppu.sprite_shifter_pattern_lo[i] = sprite_pattern_bits_lo;
+				ppu.sprite_shifter_pattern_hi[i] = sprite_pattern_bits_hi;
+			}
+        }
+		else if ppu.scanline == .PreRender && ppu.cycle >= 280 && ppu.cycle < 305
+		{
+            transfer_address_y();
+		}
+	}
+	else if ppu.scanline == .PostRender 
+	{
+		// Post Render Scanline - Do Nothing!
+	}
+	else if ppu.scanline == .VBlankStart && ppu.cycle == 1
+    {
+        // Enable Vblank, set nmi
+        ppu.status |= 0x80;
+        if (ppu.ctrl & 0x80) != 0 {
+            context.cpu.nmi_pending = true;
+        }
+    }
+
+
+	var bg_pixel: ubyte   = 0x00; // The 2-bit pixel to be rendered
+	var bg_palette: ubyte = 0x00; // The 3-bit index of the palette the pixel indexes
+
+	if (ppu.mask & 0x08) == 0x08
+	{
+		const bit_mux: ushort = 0x8000 >> ppu.x;
+
+		const p0_pixel = cast<ubyte>((ppu.bg_shifter_pattern_lo & bit_mux) > 0);
+		const p1_pixel = cast<ubyte>((ppu.bg_shifter_pattern_hi & bit_mux) > 0);
+
+		bg_pixel = (p1_pixel << 1) | p0_pixel;
+
+		const bg_pal0 = cast<ubyte>((ppu.bg_shifter_attrib_lo & bit_mux) > 0);
+		const bg_pal1 = cast<ubyte>((ppu.bg_shifter_attrib_hi & bit_mux) > 0);
+		bg_palette = (bg_pal1 << 1) | bg_pal0;
+	}
+
+	var fg_pixel: ubyte = 0x00;
+	var fg_palette: ubyte = 0x00;
+	var fg_priority: bool = false;
+
+	if (ppu.mask & 0x10) == 0x10
+	{
+
+		ppu.sprite_zero_being_rendered = false;
+
+		for i in 0..ppu.sprite_count
+		{
+			if ppu.sprite_scanline[i].x == 0
+			{
+                fg_pixel = ((ppu.sprite_shifter_pattern_hi[i] & 0x80) >> 6) | ((ppu.sprite_shifter_pattern_lo[i] & 0x80) >> 7);
+
+				fg_palette = (ppu.sprite_scanline[i].attr & 0x03) + 0x04;
+				fg_priority = (ppu.sprite_scanline[i].attr & 0x20) == 0;
+
+				if fg_pixel != 0
+				{
+					if i == 0 // Is this sprite zero?
+					{
+						ppu.sprite_zero_being_rendered = true;
+					}
+
+					break;
+				}				
+			}
+		}		
+	}
+
+
+	var pixel: ubyte = 0x00;
+	var palette: ubyte = 0x00;
+
+	if bg_pixel == 0 && fg_pixel == 0
+	{
+		pixel = 0x00;
+		palette = 0x00;
+	}
+	else if bg_pixel == 0 && fg_pixel > 0
+	{
+		pixel = fg_pixel;
+		palette = fg_palette;
+	}
+	else if bg_pixel > 0 && fg_pixel == 0
+	{
+		pixel = bg_pixel;
+		palette = bg_palette;
+	}
+	else if bg_pixel > 0 && fg_pixel > 0
+	{
+		if fg_priority
+		{
+			pixel = fg_pixel;
+			palette = fg_palette;
+		}
+		else
+		{
+			pixel = bg_pixel;
+			palette = bg_palette;
+		}
+
+		if ppu.sprite_zero_hit_possible && ppu.sprite_zero_being_rendered
+		{
+			if (ppu.mask & 0x18) == 0x18
+			{
+				if (ppu.mask & 0x06) == 0x06
+				{
+					if (ppu.cycle >= 1 && ppu.cycle < 258)
+					{
+						ppu.status |= 0x40;
+					}
+				}
+				else
+				{
+					if (ppu.cycle >= 9 && ppu.cycle < 258)
+					{
+						ppu.status |= 0x40;
+					}
+				}
+			}
+		}
+	}
+
+    renderer::set_pixel(ppu.cycle - 1, ppu.scanline - 1, ppu.system_palette[read(0x3F00 + (palette << 2) + pixel) & 0x3F]);
+
+	if ppu.cycle >= 340
+	{
+		ppu.cycle = 0;
+        if ppu.scanline >= .VBlankEnd {
+            ppu.scanline = .PreRender;
+        } else {
+            ppu.scanline++;
+            if ppu.scanline == .VBlankStart {
+                ppu.frame_ready = true;
+            }
+        }
+	}
+    else 
+    {
+        ppu.cycle++;
     }
 }
 
@@ -103,47 +449,36 @@ pub fn tick() void
 pub fn read_register(reg: ushort) ubyte
 {
     switch cast<PPURegister>(reg) {
-    case PPURegister.CTRL:
+    case .CTRL:
         io::printf("Attempted to read write-only PPUCTRL.\n");
         return 0;
-    case PPURegister.MASK:
+    case .MASK:
         io::printf("Attempted to read write-only PPUMASK.\n");
         return 0;
-    case PPURegister.STATUS:
-        const value = ppu.status;
+    case .STATUS:
+        const value = (ppu.status & 0xE0) | (ppu.data_buffer & 0x1F);
 
         // clear vblank flag
-        ppu.status &= ~(cast<ubyte>(0x80));
+        ppu.status &= 0x7F;
         ppu.w = false;
         return value;
-    case PPURegister.OAM_ADDR:
+    case .OAM_ADDR:
         io::printf("Attempted to read write-only OAMADDR.\n");
         return 0;
-    case PPURegister.OAM_DATA:
-        return ppu.oam[ppu.oam_addr];
-    case PPURegister.SCROLL:
+    case .OAM_DATA:
+        return oam_ptr[ppu.oam_addr];
+    case .SCROLL:
         io::printf("Attempted to read write-only PPUSCROLL.\n");
         return 0;
-    case PPURegister.ADDR:
+    case .ADDR:
         io::printf("Attempted to read write-only PPUADDR.\n");
         return 0;
-    case PPURegister.DATA:
-        const addr = ppu.v & 0x3FFF;
+    case .DATA:
+        var value = ppu.data_buffer;
 
-        var value: ubyte = void;
-        if addr >= 0x3F00 {
-            value = read(addr);
-        } else {
-            value = ppu.data_buffer;
-            ppu.data_buffer = read(addr);
-        }
-
-        if (ppu.ctrl & 0x04) != 0 {
-            ppu.v += 32;
-        } else {
-            ppu.v += 1;
-        }
-
+        ppu.data_buffer = read(ppu.v);
+        if ppu.v >= 0x3F00 { value = ppu.data_buffer; }
+        ppu.v += if (ppu.ctrl & 0x4) == 0x4 => 32 else => 1;
         return value;
     default:
         io::printf("Bad PPU register read: %hu.\n", reg);
@@ -157,6 +492,9 @@ pub fn write_register(addr: ushort, value: ubyte) void
 
     switch cast<PPURegister>(reg) {
     case PPURegister.CTRL:
+        if (value & 0x80) == 0x80 && (ppu.ctrl & 0x80) == 0 && (ppu.status & 0x80) == 0x80 {
+            context.cpu.nmi_pending = true;
+        }
         ppu.ctrl = value;
 
         // update nametable bits in temporary VRAM address
@@ -169,68 +507,44 @@ pub fn write_register(addr: ushort, value: ubyte) void
     case PPURegister.OAM_ADDR:
         ppu.oam_addr = value;
     case PPURegister.OAM_DATA:
-        ppu.oam[ppu.oam_addr] = value;
+        oam_ptr[ppu.oam_addr] = value;
         ppu.oam_addr += 1;
     case PPURegister.SCROLL:
         if !ppu.w {
             // first write
             // coarse X + fine X
-            ppu.t &= ~cast<ushort>(0x001F);
-            ppu.t |= cast<ushort>(value >> 3);
+            ppu.t = (ppu.t & 0xFFE0) | (value >> 3);
             ppu.x = value & 0x07;
             ppu.w = true;
         }
         else {
             // second write
             // coarse Y + fine Y
-            ppu.t &= ~cast<ushort>(0x73E0);
-            ppu.t |= cast<ushort>(value & 0x07) << 12;
-            ppu.t |= cast<ushort>(value & 0xF8) << 2;
+            ppu.t = (ppu.t & 0x0C1F) | (cast<ushort>(value & 0x7) << 12) | (cast<ushort>(value & 0xF8) << 2);
             ppu.w = false;
         }
     case PPURegister.ADDR:
         if !ppu.w {
             // first write = high byte
-            ppu.t &= 0x00FF;
-            ppu.t |= cast<ushort>(value & 0x3F) << 8;
+            ppu.t = (ppu.t & 0x00FF) | (cast<ushort>(value & 0x3F) << 8);
             ppu.w = true;
         }
         else {
-
             // second write = low byte
-
-            ppu.t &= 0x7F00;
-            ppu.t |= value;
-
+            ppu.t = (ppu.t & 0x7F00) | value;
             ppu.v = ppu.t;
-
             ppu.w = false;
         }
     case PPURegister.DATA:
         write(ppu.v & 0x3FFF, value);
-
-        if (ppu.ctrl & 0x04) != 0 {
-            ppu.v += 32;
-        }
-        else {
-            ppu.v += 1;
-        }
+        ppu.v += if (ppu.ctrl & 0x4) == 0x4 => 32 else => 1;
     default:
         io::printf("Bad PPU register write: %hu.\n", addr);
     }
 }
 
-pub fn oam_dma(page: ubyte) void
-{
-    const base = cast<ushort>(page) << 8;
-
-    for i in 0..256 {
-        ppu.oam[(ppu.oam_addr + i) & 0xFF] = bus::read(base + cast<ushort>(i));
-    }
-}
-
 @nodiscard
-fn read(addr: ushort) ubyte
+pub fn read(addr: ushort) ubyte
 {
     const a = addr & 0x3FFF;
 
@@ -249,7 +563,7 @@ fn read(addr: ushort) ubyte
     return ppu.palette[palette_mirror(a)];
 }
 
-fn write(addr: ushort, value: ubyte) void
+pub fn write(addr: ushort, value: ubyte) void
 {
     const a = addr & 0x3FFF;
 
@@ -272,11 +586,115 @@ fn write(addr: ushort, value: ubyte) void
 
 fn palette_mirror(addr: ushort) ushort
 {
-    var pal = addr & 0x1F;
+    const pal = addr & 0x1F;
+    return if pal == 0x10 => 0x00
+        else if pal == 0x14 => 0x04
+        else if pal == 0x18 => 0x08
+        else if pal == 0x1C => 0x0C
+        else => pal;
+}
 
-    if pal == 0x10 { pal = 0x00; }
-    if pal == 0x14 { pal = 0x04; }
-    if pal == 0x18 { pal = 0x08; }
-    if pal == 0x1C { pal = 0x0C; }
-    return pal;
+fn increment_scroll_x() void
+{
+    if (ppu.mask & 0x18) != 0
+    {
+        if ((ppu.v & 0x1F) == 31)
+        {
+            // Wrap coarse x, flip nametable bit.
+            ppu.v &= 0xFFE0;
+            ppu.v ^= 0x0400;
+        }
+        else
+        {
+            ppu.v++;
+        }
+    }
+}
+
+fn increment_scroll_y() void
+{
+    if (ppu.mask & 0x18) != 0
+    {
+        if (ppu.v & 0x7000) == 0x7000
+        {
+            // Wrap fine y
+            ppu.v &= 0x0FFF;
+            const coarse_y = (ppu.v >> 5) & 0x001F;
+            if coarse_y == 29
+            {
+                // Wrap coarse y and flip nametable bit
+                ppu.v &= 0xFC1F;
+                ppu.v ^= 0x0800;
+            }
+            else if coarse_y == 31
+            {
+                ppu.v &= 0xFC1F;
+            }
+            else
+            {
+                ppu.v += (1 << 5);
+            }
+        }
+        else
+        {
+            ppu.v += (1 << 12);
+        }
+    }
+    
+}
+
+fn transfer_address_x() void
+{
+    if (ppu.mask & 0x18) != 0
+    {
+        ppu.v = (ppu.v & 0xFBE0) | (ppu.t & 0x041F);
+    }
+}
+
+fn transfer_address_y() void
+{
+    if (ppu.mask & 0x18) != 0
+    {
+        ppu.v = (ppu.v & 0x041F) | (ppu.t & 0xFBE0);
+    }
+}
+
+fn load_background_shifters() void
+{
+    ppu.bg_shifter_pattern_lo = (ppu.bg_shifter_pattern_lo & 0xFF00) | ppu.bg_next_tile_lsb;
+    ppu.bg_shifter_pattern_hi = (ppu.bg_shifter_pattern_hi & 0xFF00) | ppu.bg_next_tile_msb;
+    ppu.bg_shifter_attrib_lo  = (ppu.bg_shifter_attrib_lo & 0xFF00) | (if (ppu.bg_next_tile_attrib & 0x01) == 0x01 => 0xFF else => 0x00);
+    ppu.bg_shifter_attrib_hi  = (ppu.bg_shifter_attrib_hi & 0xFF00) | (if (ppu.bg_next_tile_attrib & 0x02) == 0x02 => 0xFF else => 0x00);
+
+}
+
+fn update_shifters() void
+{
+    if (ppu.mask & 0x08) != 0
+    {
+        // Shifting background tile pattern row
+        ppu.bg_shifter_pattern_lo <<= 1;
+        ppu.bg_shifter_pattern_hi <<= 1;
+
+        // Shifting palette attributes by 1
+        ppu.bg_shifter_attrib_lo <<= 1;
+        ppu.bg_shifter_attrib_hi <<= 1;
+    }
+
+    if (ppu.mask & 0x10) != 0 && ppu.cycle >= 1 && ppu.cycle < 258
+    {
+        for i in 0..ppu.sprite_count
+        {
+            if ppu.sprite_scanline[i].x > 0
+            {
+                ppu.sprite_scanline[i].x--;
+            }
+            else
+            {
+                ppu.sprite_shifter_pattern_lo[i] <<= 1;
+                ppu.sprite_shifter_pattern_hi[i] <<= 1;
+            }
+        }
+    }
+
 }

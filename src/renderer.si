@@ -9,7 +9,6 @@ pub struct Renderer
     bg_opaque: [240][256]bool,
     sdl_ref: ?*sdl::Renderer,
     sdl_texture: ?*sdl::Texture,
-    system_palette: [64]uint,
 }
 
 #const renderer = &context.renderer;
@@ -23,7 +22,7 @@ pub fn init(window: *sdl::Window) void
         return;
     }
 
-    renderer.sdl_texture = sdl::CreateTexture(renderer.sdl_ref!, sdl::PixelFormat.RGBA32, sdl::TextureAccess.STREAMING, 256, 240);
+    renderer.sdl_texture = sdl::CreateTexture(renderer.sdl_ref!, .RGBA32, .STREAMING, 256, 240);
     if renderer.sdl_texture == null {
         io::printf("CreateTexture failed: %s\n", sdl::GetError());
         sdl::Quit();
@@ -32,180 +31,16 @@ pub fn init(window: *sdl::Window) void
 
 }
 
-fn render_scanline_bg(scanline: ushort) void
+pub fn set_pixel(x: usize, y: usize, pixel: uint) void
 {
-    const tile_y = scanline / 8;
-    const row_in_tile = scanline % 8;
-
-    for tx in 0..32 {
-
-        const tile_x: ushort = cast<ushort>(tx);
-        const nametable_index = tile_y * 32 + tile_x;
-        const tile_id = context.ppu.vram[nametable_index & 0x0FFF];
-
-        var pattern_base: ushort = void;
-        if (context.ppu.ctrl & 0x10) != 0 {
-            pattern_base = 0x1000;
-        } else {
-            pattern_base = 0x0000;
-        }
-
-        const tile_addr = pattern_base + cast<ushort>(tile_id) * 16;
-        const attr_index = 0x03C0 + (tile_y / 4) * 8 + (tile_x / 4);
-        const attr = context.ppu.vram[attr_index];
-        const quadrant_x = (tile_x % 4) / 2;
-        const quadrant_y = (tile_y % 4) / 2;
-        const palette_select = (attr >> cast<ubyte>((quadrant_y * 2 + quadrant_x) * 2)) & 0x03;
-
-        const low  = context.cart!.chr[tile_addr + row_in_tile];
-        const high = context.cart!.chr[tile_addr + row_in_tile + 8];
-
-        for col in 0..8 {
-
-            const bit0 = (low  >> cast<ubyte>(7 - col)) & 1;
-            const bit1 = (high >> cast<ubyte>(7 - col)) & 1;
-
-            const pixel = bit0 | (bit1 << 1);
-            var nes_color: ubyte = void;
-
-            const screen_x = tile_x * 8 + col;
-            const screen_y = scanline;
-
-            if pixel == 0 {
-                nes_color = context.ppu.palette[0];
-                renderer.bg_opaque[screen_y][screen_x] = false;
-            } else {
-                nes_color = context.ppu.palette[palette_select * 4 + pixel];
-                renderer.bg_opaque[screen_y][screen_x] = true;
-            }
-
-            renderer.framebuffer[screen_y][screen_x] = renderer.system_palette[nes_color & 0x3F];
-        }
-    }
-
+    if y >= renderer.framebuffer.len || x >= renderer.framebuffer[y].len { return; }
+    renderer.framebuffer[y][x] = pixel;
 }
 
-
-fn get_visible_sprites(scanline: ushort) void
-{
-    var count: uint = 0;
-
-    // NES rule: sprite Y is top-left minus 1
-    const adjusted_scanline: int = cast<int>(scanline);
-
-    for i in 0..64 {
-
-        const base = i * 4;
-
-        const y     = context.ppu.oam[base + 0];
-        const tile  = context.ppu.oam[base + 1];
-        const attr  = context.ppu.oam[base + 2];
-        const x     = context.ppu.oam[base + 3];
-
-        // 8x8 sprites (simplest case)
-        // sprite covers scanline if:
-        // y <= scanline < y + 8
-        const sprite_top: int = cast<int>(y) + 1;
-        const sprite_bot: int = sprite_top + 8;
-
-        if adjusted_scanline < sprite_top || adjusted_scanline >= sprite_bot {
-            continue;
-        }
-
-        // store sprite
-        context.ppu.scanline_sprites[count] = ppu::Sprite{
-            y: y,
-            tile: tile,
-            attr: attr,
-            x: x,
-            oam_index: i,
-        };
-
-        count += 1;
-
-        // NES hardware limit
-        if count == 8 {
-            break;
-        }
-    }
-
-    context.ppu.sprite_count = count;
-}
-
-fn render_sprites(scanline: ushort) void
-{
-    for i in 0..context.ppu.sprite_count {
-        const sprite = context.ppu.scanline_sprites[i];
-        var row = cast<ubyte>(scanline - sprite.y - 1);
-
-        // Vertical flip
-        if (sprite.attr & 0x80) != 0 {
-            row = 7 - row;
-        }
-
-        var pattern_base: ushort = 0;
-        if (context.ppu.ctrl & 0x08) != 0 {
-            pattern_base = 0x1000;
-        }
-
-        const tile_addr = pattern_base + cast<ushort>(sprite.tile) * 16;
-
-        const low  = context.cart!.chr[tile_addr + row];
-        const high = context.cart!.chr[tile_addr + row + 8];
-
-        for col in 0..8 {
-
-            var bit_index: ubyte = cast<ubyte>(7 - col);
-
-            // Horizontal flip
-            if (sprite.attr & 0x40) != 0 {
-                bit_index = cast<ubyte>(col);
-            }
-
-            const bit0 = (low  >> bit_index) & 1;
-            const bit1 = (high >> bit_index) & 1;
-
-            const pixel = bit0 | (bit1 << 1);
-
-            // Color 0 is transparent for sprites
-            if pixel == 0 {
-                continue;
-            }
-
-            const x = cast<ushort>(sprite.x) + col;
-
-            if x >= 256 {
-                continue;
-            }
-
-            //
-            // SPRITE 0 HIT
-            //
-            if sprite.oam_index == 0 && context.renderer.bg_opaque[scanline][x] && x < 255 {
-                context.ppu.status |= 0x40;
-            }
-            const palette_addr = 0x10 + (sprite.attr & 0x03) * 4 + pixel;
-            const nes_color = context.ppu.palette[palette_addr];
-            renderer.framebuffer[scanline][x] = renderer.system_palette[nes_color & 0x3F];
-        }
-    }
-}
-
-pub fn render_scanline(scanline: ushort) void
-{
-    // Only visible area
-    if scanline >= 240 {
-        return;
-    }
-    
-    render_scanline_bg(scanline);
-    get_visible_sprites(scanline);
-    render_sprites(scanline);
-}
 
 pub fn present_frame() void
 {
-    var pixels: *void;
+    var pixels: *void = void;
     var pitch: int;
 
     sdl::LockTexture(renderer.sdl_texture!, null, &pixels, &pitch);
@@ -213,10 +48,7 @@ pub fn present_frame() void
     for y in 0..renderer.framebuffer.len {
 
         const row = cast<*[renderer.framebuffer[0].len]uint>(cast<uptr>(pixels) + (y * cast<usize>(pitch)));
-
-        for x in 0..renderer.framebuffer[y].len {
-            row[x] = renderer.framebuffer[y][x];
-        }
+        io::memcpy(row, &renderer.framebuffer[y], #sizeof(#typeof(renderer.framebuffer[y])));
     }
 
     sdl::UnlockTexture(renderer.sdl_texture!);

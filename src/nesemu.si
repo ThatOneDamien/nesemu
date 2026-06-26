@@ -1,11 +1,11 @@
 pub mod sdl;
+pub mod apu;
 pub mod cpu;
 pub mod ppu;
 pub mod io;
 pub mod bus;
 pub mod cart;
 pub mod renderer;
-pub mod controller;
 
 import cart::NesCart;
 
@@ -13,7 +13,7 @@ pub typedef CString = *[*]const char;
 pub extern fn malloc(size: usize) *void;
 
 pub var context = EmuContext {
-    renderer: renderer::Renderer{
+    ppu: ppu::PPU{
         system_palette: [
             0xFF626262, 0xFFB21F00, 0xFFC80424, 0xFFB20052,
             0xFF760073, 0xFF240080, 0xFF000B73, 0xFF002852,
@@ -44,13 +44,14 @@ pub #const WINDOW_SCALE: uint = 3;
 
 pub struct EmuContext
 {
+    apu: apu::APU,
     cpu: cpu::CPU,
     ppu: ppu::PPU,
+    bus: bus::Bus,
     ram: [0x800]ubyte,
     cart: ?NesCart,
     renderer: renderer::Renderer,
     window: ?*sdl::Window,
-    controller: controller::Controller,
     running: bool,
 }
 
@@ -72,9 +73,9 @@ fn main(args: []CString) int
 
     context.cart = NesCart.from_file(args[1]);
     if context.cart == null { return 1; }
-    cpu::power();
-    ppu::power();
+
     renderer::init(context.window!);
+    power_on();
 
     context.running = true;
     const freq = sdl::GetPerformanceFrequency();
@@ -85,39 +86,39 @@ fn main(args: []CString) int
     var frames: uint = 0;
 
     while context.running {
-    // for _a in 0..90000 {
-        cpu::tick();
-
-
-        for _i in 0..3 {
-            ppu::tick();
-
-            if context.ppu.frame_ready {
-                const next_frame = sdl::GetPerformanceCounter();
-                if ((next_frame - prev_fps_calc) / freq) >= 1 {
-                    io::printf("FPS: %u\n", frames);
-                    prev_fps_calc = next_frame;
-                    frames = 0;
-                }
-                const delta = (next_frame - prev_frame) / freq_ns;
-                if delta < NS_PER_FRAME {
-                    sdl::DelayNS(cast<ulong>(NS_PER_FRAME - delta));
-                    prev_frame = sdl::GetPerformanceCounter();
-                } else {
-                    prev_frame = next_frame;
-                }
-                frames++;
-                process_events();
-                controller::set_state();
-                renderer::present_frame();
-                context.ppu.frame_ready = false;
+        bus::clock();
+        if context.ppu.frame_ready {
+            const next_frame = sdl::GetPerformanceCounter();
+            if ((next_frame - prev_fps_calc) / freq) >= 1 {
+                io::printf("FPS: %u\n", frames);
+                prev_fps_calc = next_frame;
+                frames = 0;
             }
+            const delta = (next_frame - prev_frame) / freq_ns;
+            if delta < NS_PER_FRAME {
+                sdl::DelayNS(cast<ulong>(NS_PER_FRAME - delta));
+                prev_frame = sdl::GetPerformanceCounter();
+            } else {
+                prev_frame = next_frame;
+            }
+            frames++;
+            process_events();
+            set_controller_state();
+            renderer::present_frame();
+            context.ppu.frame_ready = false;
         }
     }
 
     sdl::DestroyWindow(context.window!);
     sdl::Quit();
     return 0;
+}
+
+fn power_on() void
+{
+    bus::power();
+    cpu::power();
+    ppu::power();
 }
 
 fn create_window() bool 
@@ -128,7 +129,7 @@ fn create_window() bool
 		return false;
 	}
     
-    context.window = sdl::CreateWindow("My Bum Ah Nes Emulator", cast<int>(WINDOW_W * WINDOW_SCALE), cast<int>(WINDOW_H * WINDOW_SCALE), 0);
+    context.window = sdl::CreateWindow("Nes Emulator", cast<int>(WINDOW_W * WINDOW_SCALE), cast<int>(WINDOW_H * WINDOW_SCALE), 0);
     if (context.window == null) {
         io::printf("CreateWindow failed: %s\n", sdl::GetError());
         sdl::Quit();
@@ -147,4 +148,20 @@ fn process_events() void
             context.running = false;
         }
     }
+}
+
+fn set_controller_state() void
+{
+    var key_cnt: int = void;
+    const keys = sdl::GetKeyboardState(&key_cnt);
+    var new_state: ubyte = 0;
+    if keys[sdl::Scancode.X]      { new_state |= 1 << 0; } // A
+    if keys[sdl::Scancode.Z]      { new_state |= 1 << 1; } // B
+    if keys[sdl::Scancode.RSHIFT] { new_state |= 1 << 2; } // Select
+    if keys[sdl::Scancode.RETURN] { new_state |= 1 << 3; } // Start
+    if keys[sdl::Scancode.UP]     { new_state |= 1 << 4; }
+    if keys[sdl::Scancode.DOWN]   { new_state |= 1 << 5; }
+    if keys[sdl::Scancode.LEFT]   { new_state |= 1 << 6; }
+    if keys[sdl::Scancode.RIGHT]  { new_state |= 1 << 7; }
+    context.bus.controllers[0].state = new_state;
 }

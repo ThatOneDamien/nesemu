@@ -76,24 +76,18 @@ pub fn reset() void
 
 #const cpu = &context.cpu;
 
-pub fn tick() void
+pub fn clock() void
 {
     if cpu.current_cycles == 0 {
+        const opcode = bus::read(cpu.pc);
+        const instr = &opcodes[opcode];
 
-        if cpu.nmi_pending {
-            cpu.nmi_pending = false;
-            nmi();
-        } else {
-            const opcode = bus::read(cpu.pc);
-            const instr = &opcodes[opcode];
+        // print_state(opcode, instr);
 
-            // print_state(opcode, instr);
-
-            cpu.pc++;
-            cpu.current_cycles = instr.cycles;
-            var operand = resolve_operand(instr.addr_mode);
-            dispatch_instruction(instr, &operand);
-        }
+        cpu.pc++;
+        cpu.current_cycles = instr.cycles;
+        var operand = resolve_operand(instr.addr_mode);
+        dispatch_instruction(instr, &operand);
     }
     cpu.current_cycles--;
     cpu.total_cycles++;
@@ -134,7 +128,21 @@ fn print_state(opcode: ubyte, instr: *const Instr) void
 
 }
 
-fn nmi() void
+pub fn irq() void
+{
+	if !cpu.status.i
+	{
+        stack_push16(cpu.pc);
+        stack_push(get_status(false));
+
+		// Read new program counter location from fixed address
+		cpu.pc = bus::read16(0xFFFE);
+		// IRQs take time
+		cpu.current_cycles = 7;
+	}
+}
+
+pub fn nmi() void
 {
     stack_push16(cpu.pc);
     // push status (with correct flags handling)
@@ -145,47 +153,47 @@ fn nmi() void
 
     // jump to NMI vector
     cpu.pc = bus::read16(0xFFFA);
-    cpu.current_cycles += 7;
+    cpu.current_cycles = 8;
 }
 
 fn resolve_operand(mode: AddrMode) Operand
 {
     var operand = Operand{}; 
     switch mode {
-    case AddrMode.Implied: break;
-    case AddrMode.Accumulator:
+    case .Implied: break;
+    case .Accumulator:
         operand.value = cpu.a;
-    case AddrMode.Immediate:
+    case .Immediate:
         operand.addr = cpu.pc;
         operand.value = bus::read(cpu.pc);
         cpu.pc++;
-    case AddrMode.ZeroPage:
+    case .ZeroPage:
         operand.addr = bus::read(cpu.pc);
         cpu.pc++;
-    case AddrMode.ZeroPageX:
+    case .ZeroPageX:
         operand.addr = (bus::read(cpu.pc) + cpu.x) & 0xFF;
         cpu.pc++;
-    case AddrMode.ZeroPageY:
+    case .ZeroPageY:
         operand.addr = (bus::read(cpu.pc) + cpu.y) & 0xFF;
         cpu.pc++;
-    case AddrMode.Absolute:
+    case .Absolute:
         operand.addr = bus::read16(cpu.pc); 
         cpu.pc += 2;
-    case AddrMode.AbsoluteX:
+    case .AbsoluteX:
         const base = bus::read16(cpu.pc);
         operand.addr = base + cpu.x;
         operand.page_crossed = did_cross_page(base, operand.addr);
         cpu.pc += 2;
-    case AddrMode.AbsoluteY:
+    case .AbsoluteY:
         const base = bus::read16(cpu.pc);
         operand.addr = base + cpu.y;
         operand.page_crossed = did_cross_page(base, operand.addr);
         cpu.pc += 2;
-    case AddrMode.Relative:
+    case .Relative:
         const offset = cast<byte>(bus::read(cpu.pc));
         cpu.pc++;
         operand.addr = cpu.pc + cast<ushort>(cast<short>(offset));
-    case AddrMode.Indirect:
+    case .Indirect:
         const ptr = bus::read16(cpu.pc);
         cpu.pc += 2;
 
@@ -201,13 +209,13 @@ fn resolve_operand(mode: AddrMode) Operand
         const hi = bus::read(hi_addr);
 
         operand.addr = (cast<ushort>(hi) << 8) | lo;
-    case AddrMode.IndirectX:
+    case .IndirectX:
         const base = bus::read(cpu.pc) + cpu.x;
         cpu.pc++;
         const lo = bus::read(cast<ushort>(base));
         const hi = bus::read(cast<ushort>(base + 1));
         operand.addr = (cast<ushort>(hi) << 8) | lo;
-    case AddrMode.IndirectY:
+    case .IndirectY:
         const base = bus::read(cpu.pc);
         cpu.pc++;
         const lo = bus::read(cast<ushort>(base));
@@ -229,9 +237,9 @@ fn did_cross_page(base: ushort, addr: ushort) bool
 fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
 {
     switch instr.kind {
-    case InstrKind.Invalid:
+    case .Invalid:
         io::printf("Bad instruction.");
-    case InstrKind.ADC:
+    case .ADC:
         const val = operand.load_value();
         const result_full: ushort = cast<ushort>(cpu.a) + val + cast<ushort>(cpu.status.c);
         const result = cast<ubyte>(result_full);
@@ -239,130 +247,130 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.status.v = ((result ^ cpu.a) & (result ^ val) & 0x80) != 0;
         cpu.a = result;
         set_nz(cpu.a);
-    case InstrKind.AND:
+    case .AND:
         cpu.a &= operand.load_value();
         set_nz(cpu.a);
-    case InstrKind.ASL:
+    case .ASL:
         const val = operand.load_value();
         const result = val << 1;
         set_mem_or_acc(result, operand, instr);
         cpu.status.c = (val >> 7) != 0;
         set_nz(result);
-    case InstrKind.BCC:
+    case .BCC:
         branch_if_cond(!cpu.status.c, operand);
-    case InstrKind.BCS:
+    case .BCS:
         branch_if_cond(cpu.status.c, operand);
-    case InstrKind.BEQ:
+    case .BEQ:
         branch_if_cond(cpu.status.z, operand);
-    case InstrKind.BIT:
+    case .BIT:
         const val = operand.load_value();
         const result = cpu.a & val;
         cpu.status.z = result == 0;
         cpu.status.n = (val & (1 << 7)) != 0;
         cpu.status.v = (val & (1 << 6)) != 0;
-    case InstrKind.BMI:
+    case .BMI:
         branch_if_cond(cpu.status.n, operand);
-    case InstrKind.BNE:
+    case .BNE:
         branch_if_cond(!cpu.status.z, operand);
-    case InstrKind.BPL:
+    case .BPL:
         branch_if_cond(!cpu.status.n, operand);
-    case InstrKind.BRK:
+    case .BRK:
         cpu.pc++;
         stack_push16(cpu.pc);
         stack_push(get_status(true));
         cpu.status.i = true;
         cpu.pc = bus::read16(0xFFFE);
 
-    case InstrKind.BVC:
+    case .BVC:
         branch_if_cond(!cpu.status.v, operand);
-    case InstrKind.BVS:
+    case .BVS:
         branch_if_cond(cpu.status.v, operand);
-    case InstrKind.CLC:
+    case .CLC:
         cpu.status.c = false;
-    case InstrKind.CLD:
+    case .CLD:
         cpu.status.d = false;
-    case InstrKind.CLI:
+    case .CLI:
         cpu.status.i = false;
-    case InstrKind.CLV:
+    case .CLV:
         cpu.status.v = false;
-    case InstrKind.CMP:
+    case .CMP:
         compare_op(cpu.a, operand.load_value());
-    case InstrKind.CPX:
+    case .CPX:
         compare_op(cpu.x, operand.load_value());
-    case InstrKind.CPY:
+    case .CPY:
         compare_op(cpu.y, operand.load_value());
-    case InstrKind.DEC:
+    case .DEC:
         const result = operand.load_value() - 1;
         bus::write(operand.addr, result);
         set_nz(result);
-    case InstrKind.DEX:
+    case .DEX:
         set_nz(--cpu.x);
-    case InstrKind.DEY:
+    case .DEY:
         set_nz(--cpu.y);
-    case InstrKind.EOR:
+    case .EOR:
         cpu.a = cpu.a ^ operand.load_value();
         set_nz(cpu.a);
-    case InstrKind.INC:
+    case .INC:
         const result = operand.load_value() + 1;
         bus::write(operand.addr, result);
         set_nz(result);
-    case InstrKind.INX:
+    case .INX:
         set_nz(++cpu.x);
-    case InstrKind.INY:
+    case .INY:
         set_nz(++cpu.y);
-    case InstrKind.JMP:
+    case .JMP:
         cpu.pc = operand.addr;
-    case InstrKind.JSR:
+    case .JSR:
         stack_push16(cpu.pc - 1);
         cpu.pc = operand.addr;
-    case InstrKind.LDA:
+    case .LDA:
         cpu.a = operand.load_value();
         set_nz(cpu.a);
-    case InstrKind.LDX:
+    case .LDX:
         cpu.x = operand.load_value();
         set_nz(cpu.x);
-    case InstrKind.LDY:
+    case .LDY:
         cpu.y = operand.load_value();
         set_nz(cpu.y);
-    case InstrKind.LSR:
+    case .LSR:
         const val = operand.load_value();
         const result = val >> 1;
         set_mem_or_acc(result, operand, instr);
         cpu.status.c = (val & 1) != 0;
         cpu.status.n = false;
         cpu.status.z = result == 0;
-    case InstrKind.NOP:
+    case .NOP:
         break;
-    case InstrKind.ORA:
+    case .ORA:
         cpu.a |= operand.load_value();
         set_nz(cpu.a);
-    case InstrKind.PHA:
+    case .PHA:
         stack_push(cpu.a);
-    case InstrKind.PHP:
+    case .PHP:
         stack_push(get_status(true));
-    case InstrKind.PLA:
+    case .PLA:
         cpu.a = stack_pop();
         set_nz(cpu.a);
-    case InstrKind.PLP:
+    case .PLP:
         pop_status();
-    case InstrKind.ROL:
+    case .ROL:
         const val = operand.load_value();
         const result = (val << 1) | cast<ubyte>(cpu.status.c);
         set_mem_or_acc(result, operand, instr);
         cpu.status.c = (val & 0x80) != 0;
         set_nz(result);
-    case InstrKind.ROR:
+    case .ROR:
         const val = operand.load_value();
         const result = (val >> 1) | (cast<ubyte>(cpu.status.c) << 7);
         set_mem_or_acc(result, operand, instr);
         cpu.status.c = (val & 0x1) != 0;
         set_nz(result);
-    case InstrKind.RTI:
+    case .RTI:
         pop_status();
         cpu.pc = stack_pop16();
-    case InstrKind.RTS:
+    case .RTS:
         cpu.pc = stack_pop16() + 1;
-    case InstrKind.SBC:
+    case .SBC:
         const not_val = ~operand.load_value();
         const result_full: ushort = cast<ushort>(cpu.a) + not_val + cast<ushort>(cpu.status.c);
         const result = cast<ubyte>(result_full);
@@ -370,45 +378,67 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.status.v = ((result ^ cpu.a) & (result ^ not_val) & 0x80) != 0;
         cpu.a = result;
         set_nz(cpu.a);
-    case InstrKind.SEC:
+    case .SEC:
         cpu.status.c = true;
-    case InstrKind.SED:
+    case .SED:
         cpu.status.d = true;
-    case InstrKind.SEI:
+    case .SEI:
         cpu.status.i = true;
-    case InstrKind.STA:
+    case .STA:
         bus::write(operand.addr, cpu.a);
-    case InstrKind.STX:
+    case .STX:
         bus::write(operand.addr, cpu.x);
-    case InstrKind.STY:
+    case .STY:
         bus::write(operand.addr, cpu.y);
-    case InstrKind.TAX:
+    case .TAX:
         cpu.x = cpu.a;
         set_nz(cpu.x);
-    case InstrKind.TAY:
+    case .TAY:
         cpu.y = cpu.a;
         set_nz(cpu.y);
-    case InstrKind.TSX:
+    case .TSX:
         cpu.x = cpu.sp;
         set_nz(cpu.x);
-    case InstrKind.TXA:
+    case .TXA:
         cpu.a = cpu.x;
         set_nz(cpu.a);
-    case InstrKind.TXS:
+    case .TXS:
         cpu.sp = cpu.x;
-    case InstrKind.TYA:
+    case .TYA:
         cpu.a = cpu.y;
         set_nz(cpu.a);
-    case InstrKind.ALR:
-    case InstrKind.ANC:
-    case InstrKind.ARR:
-    case InstrKind.AXS:
-        todo(null);
-    case InstrKind.DCP:
+    case .ALR:
+        cpu.a &= operand.load_value();
+        cpu.status.c = (cpu.a & 1) != 0;
+        cpu.a >>= 1;
+        set_nz(cpu.a);
+    case .ANC:
+        cpu.a &= operand.load_value();
+        set_nz(cpu.a);
+        cpu.status.c = cpu.status.n;
+    case .ARR:
+        var val = cpu.a & operand.load_value();
+
+        val = (val >> 1) | (cast<ubyte>(cpu.status.c) << 7);
+
+        cpu.a = val;
+
+        set_nz(cpu.a);
+
+        cpu.status.c = (cpu.a & 0x40) != 0;
+        cpu.status.v = (((cpu.a >> 6) ^ (cpu.a >> 5)) & 1) == 1;
+    case .AXS:
+        const lhs = cpu.a & cpu.x;
+        const rhs = operand.load_value();
+        const result = lhs - rhs;
+        cpu.status.c = lhs >= rhs;
+        cpu.x = result;
+        set_nz(cpu.x);
+    case .DCP:
         const val = operand.load_value() - 1;
         bus::write(operand.addr, val);
         compare_op(cpu.a, val);
-    case InstrKind.ISB:
+    case .ISB:
         const val = operand.load_value() + 1;
         bus::write(operand.addr, val);
 
@@ -419,14 +449,20 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.status.v = ((result ^ cpu.a) & (result ^ not_val) & 0x80) != 0;
         cpu.a = result;
         set_nz(cpu.a);
-    case InstrKind.LAS:
-        todo(null);
-    case InstrKind.LAX:
+    case .LAS:
+        const val = operand.load_value() & cpu.sp;
+
+        cpu.a = val;
+        cpu.x = val;
+        cpu.sp = val;
+
+        set_nz(val);
+    case .LAX:
         const val = operand.load_value();
         cpu.a = val;
         cpu.x = val;
         set_nz(val);
-    case InstrKind.RLA:
+    case .RLA:
         var val = operand.load_value();
 
         const new_c = (val & 0x80) != 0;
@@ -437,7 +473,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
 
         cpu.a &= val;
         set_nz(cpu.a);
-    case InstrKind.RRA:
+    case .RRA:
         const val = operand.load_value();
         const result = (val >> 1) | (cast<ubyte>(cpu.status.c) << 7);
         set_mem_or_acc(result, operand, instr);
@@ -448,13 +484,13 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.status.v = ((adc ^ cpu.a) & (adc ^ result) & 0x80) != 0;
         cpu.a = adc;
         set_nz(cpu.a);
-    case InstrKind.SAX:
+    case .SAX:
         const val = cpu.a & cpu.x;
         bus::write(operand.addr, val);
-    case InstrKind.SHX:
-    case InstrKind.SHY:
+    case .SHX:
+    case .SHY:
         todo(null);
-    case InstrKind.SLO:
+    case .SLO:
         var val = operand.load_value();
         cpu.status.c = (val & 0x80) != 0;
 
@@ -463,7 +499,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
 
         cpu.a |= val;
         set_nz(cpu.a);
-    case InstrKind.SRE:
+    case .SRE:
         var val = operand.load_value();
         cpu.status.c = (val & 0x01) != 0;
 
@@ -472,11 +508,11 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
 
         cpu.a ^= val;
         set_nz(cpu.a);
-    case InstrKind.TAS:
-    case InstrKind.XAA:
-    case InstrKind.AHX:
-    case InstrKind.STP:
-        todo(null);
+    case .TAS:
+    case .XAA:
+    case .AHX:
+    case .STP:
+        todo("Instruction not implemented");
     }
     if operand.page_crossed && instr.page_cross_penalty {
         cpu.current_cycles++;
@@ -525,7 +561,7 @@ fn stack_push(value: ubyte) void
 
 fn stack_push16(value: ushort) void
 {
-    stack_push(cast<ubyte>(value >> 8));
+    stack_push(value >> 8);
     stack_push(cast<ubyte>(value));
 }
 
@@ -763,291 +799,291 @@ const addr_mode_to_str: [#type_max(AddrMode) - #type_min(AddrMode) + 1]CString =
 ];
 
 const opcodes: [0x100]Instr = [
-    0x00: Instr{ kind: InstrKind.BRK, addr_mode: AddrMode.Implied,    cycles: 7, bytes: 1, page_cross_penalty: false },
-    0x01: Instr{ kind: InstrKind.ORA, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x02: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x03: Instr{ kind: InstrKind.SLO, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0x04: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x05: Instr{ kind: InstrKind.ORA, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x06: Instr{ kind: InstrKind.ASL, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
-    0x07: Instr{ kind: InstrKind.SLO, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x00: Instr{ kind: .BRK, addr_mode: .Implied,    cycles: 7, bytes: 1, page_cross_penalty: false },
+    0x01: Instr{ kind: .ORA, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x02: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x03: Instr{ kind: .SLO, addr_mode: .IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x04: Instr{ kind: .NOP, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x05: Instr{ kind: .ORA, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x06: Instr{ kind: .ASL, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x07: Instr{ kind: .SLO, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
 
-    0x08: Instr{ kind: InstrKind.PHP, addr_mode: AddrMode.Implied,    cycles: 3, bytes: 1, page_cross_penalty: false },
-    0x09: Instr{ kind: InstrKind.ORA, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x0A: Instr{ kind: InstrKind.ASL, addr_mode: AddrMode.Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x0B: Instr{ kind: InstrKind.ANC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x0C: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x0D: Instr{ kind: InstrKind.ORA, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x0E: Instr{ kind: InstrKind.ASL, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
-    0x0F: Instr{ kind: InstrKind.SLO, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x08: Instr{ kind: .PHP, addr_mode: .Implied,    cycles: 3, bytes: 1, page_cross_penalty: false },
+    0x09: Instr{ kind: .ORA, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x0A: Instr{ kind: .ASL, addr_mode: .Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x0B: Instr{ kind: .ANC, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x0C: Instr{ kind: .NOP, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x0D: Instr{ kind: .ORA, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x0E: Instr{ kind: .ASL, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x0F: Instr{ kind: .SLO, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
 
-    0x10: Instr{ kind: InstrKind.BPL, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
-    0x11: Instr{ kind: InstrKind.ORA, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
-    0x12: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x13: Instr{ kind: InstrKind.SLO, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0x14: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x15: Instr{ kind: InstrKind.ORA, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x16: Instr{ kind: InstrKind.ASL, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x17: Instr{ kind: InstrKind.SLO, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x10: Instr{ kind: .BPL, addr_mode: .Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x11: Instr{ kind: .ORA, addr_mode: .IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0x12: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x13: Instr{ kind: .SLO, addr_mode: .IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x14: Instr{ kind: .NOP, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x15: Instr{ kind: .ORA, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x16: Instr{ kind: .ASL, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x17: Instr{ kind: .SLO, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
 
-    0x18: Instr{ kind: InstrKind.CLC, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x19: Instr{ kind: InstrKind.ORA, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x1A: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x1B: Instr{ kind: InstrKind.SLO, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0x1C: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x1D: Instr{ kind: InstrKind.ORA, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x1E: Instr{ kind: InstrKind.ASL, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0x1F: Instr{ kind: InstrKind.SLO, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x18: Instr{ kind: .CLC, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x19: Instr{ kind: .ORA, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x1A: Instr{ kind: .NOP, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x1B: Instr{ kind: .SLO, addr_mode: .AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x1C: Instr{ kind: .NOP, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x1D: Instr{ kind: .ORA, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x1E: Instr{ kind: .ASL, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x1F: Instr{ kind: .SLO, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
 
-    0x20: Instr{ kind: InstrKind.JSR, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
-    0x21: Instr{ kind: InstrKind.AND, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x22: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x23: Instr{ kind: InstrKind.RLA, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0x24: Instr{ kind: InstrKind.BIT, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x25: Instr{ kind: InstrKind.AND, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x26: Instr{ kind: InstrKind.ROL, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
-    0x27: Instr{ kind: InstrKind.RLA, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x20: Instr{ kind: .JSR, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x21: Instr{ kind: .AND, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x22: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x23: Instr{ kind: .RLA, addr_mode: .IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x24: Instr{ kind: .BIT, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x25: Instr{ kind: .AND, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x26: Instr{ kind: .ROL, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x27: Instr{ kind: .RLA, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
 
-    0x28: Instr{ kind: InstrKind.PLP, addr_mode: AddrMode.Implied,    cycles: 4, bytes: 1, page_cross_penalty: false },
-    0x29: Instr{ kind: InstrKind.AND, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x2A: Instr{ kind: InstrKind.ROL, addr_mode: AddrMode.Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x2B: Instr{ kind: InstrKind.ANC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x2C: Instr{ kind: InstrKind.BIT, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x2D: Instr{ kind: InstrKind.AND, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x2E: Instr{ kind: InstrKind.ROL, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
-    0x2F: Instr{ kind: InstrKind.RLA, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x28: Instr{ kind: .PLP, addr_mode: .Implied,    cycles: 4, bytes: 1, page_cross_penalty: false },
+    0x29: Instr{ kind: .AND, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x2A: Instr{ kind: .ROL, addr_mode: .Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x2B: Instr{ kind: .ANC, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x2C: Instr{ kind: .BIT, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x2D: Instr{ kind: .AND, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x2E: Instr{ kind: .ROL, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x2F: Instr{ kind: .RLA, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
 
-    0x30: Instr{ kind: InstrKind.BMI, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
-    0x31: Instr{ kind: InstrKind.AND, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
-    0x32: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x33: Instr{ kind: InstrKind.RLA, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0x34: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x35: Instr{ kind: InstrKind.AND, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x36: Instr{ kind: InstrKind.ROL, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x37: Instr{ kind: InstrKind.RLA, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x30: Instr{ kind: .BMI, addr_mode: .Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x31: Instr{ kind: .AND, addr_mode: .IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0x32: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x33: Instr{ kind: .RLA, addr_mode: .IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x34: Instr{ kind: .NOP, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x35: Instr{ kind: .AND, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x36: Instr{ kind: .ROL, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x37: Instr{ kind: .RLA, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
 
-    0x38: Instr{ kind: InstrKind.SEC, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x39: Instr{ kind: InstrKind.AND, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x3A: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x3B: Instr{ kind: InstrKind.RLA, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0x3C: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x3D: Instr{ kind: InstrKind.AND, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x3E: Instr{ kind: InstrKind.ROL, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0x3F: Instr{ kind: InstrKind.RLA, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x38: Instr{ kind: .SEC, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x39: Instr{ kind: .AND, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x3A: Instr{ kind: .NOP, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x3B: Instr{ kind: .RLA, addr_mode: .AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x3C: Instr{ kind: .NOP, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x3D: Instr{ kind: .AND, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x3E: Instr{ kind: .ROL, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x3F: Instr{ kind: .RLA, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
 
-    0x40: Instr{ kind: InstrKind.RTI, addr_mode: AddrMode.Implied,    cycles: 6, bytes: 1, page_cross_penalty: false },
-    0x41: Instr{ kind: InstrKind.EOR, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x42: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x43: Instr{ kind: InstrKind.SRE, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0x44: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x45: Instr{ kind: InstrKind.EOR, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x46: Instr{ kind: InstrKind.LSR, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
-    0x47: Instr{ kind: InstrKind.SRE, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x40: Instr{ kind: .RTI, addr_mode: .Implied,    cycles: 6, bytes: 1, page_cross_penalty: false },
+    0x41: Instr{ kind: .EOR, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x42: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x43: Instr{ kind: .SRE, addr_mode: .IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x44: Instr{ kind: .NOP, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x45: Instr{ kind: .EOR, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x46: Instr{ kind: .LSR, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x47: Instr{ kind: .SRE, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
 
-    0x48: Instr{ kind: InstrKind.PHA, addr_mode: AddrMode.Implied,    cycles: 3, bytes: 1, page_cross_penalty: false },
-    0x49: Instr{ kind: InstrKind.EOR, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x4A: Instr{ kind: InstrKind.LSR, addr_mode: AddrMode.Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x4B: Instr{ kind: InstrKind.ALR, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x4C: Instr{ kind: InstrKind.JMP, addr_mode: AddrMode.Absolute,   cycles: 3, bytes: 3, page_cross_penalty: false },
-    0x4D: Instr{ kind: InstrKind.EOR, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x4E: Instr{ kind: InstrKind.LSR, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
-    0x4F: Instr{ kind: InstrKind.SRE, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x48: Instr{ kind: .PHA, addr_mode: .Implied,    cycles: 3, bytes: 1, page_cross_penalty: false },
+    0x49: Instr{ kind: .EOR, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x4A: Instr{ kind: .LSR, addr_mode: .Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x4B: Instr{ kind: .ALR, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x4C: Instr{ kind: .JMP, addr_mode: .Absolute,   cycles: 3, bytes: 3, page_cross_penalty: false },
+    0x4D: Instr{ kind: .EOR, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x4E: Instr{ kind: .LSR, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x4F: Instr{ kind: .SRE, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
 
-    0x50: Instr{ kind: InstrKind.BVC, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
-    0x51: Instr{ kind: InstrKind.EOR, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
-    0x52: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x53: Instr{ kind: InstrKind.SRE, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0x54: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x55: Instr{ kind: InstrKind.EOR, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x56: Instr{ kind: InstrKind.LSR, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x57: Instr{ kind: InstrKind.SRE, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x50: Instr{ kind: .BVC, addr_mode: .Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x51: Instr{ kind: .EOR, addr_mode: .IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0x52: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x53: Instr{ kind: .SRE, addr_mode: .IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x54: Instr{ kind: .NOP, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x55: Instr{ kind: .EOR, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x56: Instr{ kind: .LSR, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x57: Instr{ kind: .SRE, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
 
-    0x58: Instr{ kind: InstrKind.CLI, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x59: Instr{ kind: InstrKind.EOR, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x5A: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x5B: Instr{ kind: InstrKind.SRE, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0x5C: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x5D: Instr{ kind: InstrKind.EOR, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x5E: Instr{ kind: InstrKind.LSR, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0x5F: Instr{ kind: InstrKind.SRE, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x58: Instr{ kind: .CLI, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x59: Instr{ kind: .EOR, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x5A: Instr{ kind: .NOP, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x5B: Instr{ kind: .SRE, addr_mode: .AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x5C: Instr{ kind: .NOP, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x5D: Instr{ kind: .EOR, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x5E: Instr{ kind: .LSR, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x5F: Instr{ kind: .SRE, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
 
-    0x60: Instr{ kind: InstrKind.RTS, addr_mode: AddrMode.Implied,    cycles: 6, bytes: 1, page_cross_penalty: false },
-    0x61: Instr{ kind: InstrKind.ADC, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x62: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x63: Instr{ kind: InstrKind.RRA, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0x64: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x65: Instr{ kind: InstrKind.ADC, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x66: Instr{ kind: InstrKind.ROR, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
-    0x67: Instr{ kind: InstrKind.RRA, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x60: Instr{ kind: .RTS, addr_mode: .Implied,    cycles: 6, bytes: 1, page_cross_penalty: false },
+    0x61: Instr{ kind: .ADC, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x62: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x63: Instr{ kind: .RRA, addr_mode: .IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x64: Instr{ kind: .NOP, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x65: Instr{ kind: .ADC, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x66: Instr{ kind: .ROR, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0x67: Instr{ kind: .RRA, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
 
-    0x68: Instr{ kind: InstrKind.PLA, addr_mode: AddrMode.Implied,    cycles: 4, bytes: 1, page_cross_penalty: false },
-    0x69: Instr{ kind: InstrKind.ADC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x6A: Instr{ kind: InstrKind.ROR, addr_mode: AddrMode.Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x6B: Instr{ kind: InstrKind.ARR, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x6C: Instr{ kind: InstrKind.JMP, addr_mode: AddrMode.Indirect,   cycles: 5, bytes: 3, page_cross_penalty: false },
-    0x6D: Instr{ kind: InstrKind.ADC, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x6E: Instr{ kind: InstrKind.ROR, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
-    0x6F: Instr{ kind: InstrKind.RRA, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x68: Instr{ kind: .PLA, addr_mode: .Implied,    cycles: 4, bytes: 1, page_cross_penalty: false },
+    0x69: Instr{ kind: .ADC, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x6A: Instr{ kind: .ROR, addr_mode: .Accumulator,cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x6B: Instr{ kind: .ARR, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x6C: Instr{ kind: .JMP, addr_mode: .Indirect,   cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x6D: Instr{ kind: .ADC, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x6E: Instr{ kind: .ROR, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0x6F: Instr{ kind: .RRA, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
 
-    0x70: Instr{ kind: InstrKind.BVS, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
-    0x71: Instr{ kind: InstrKind.ADC, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
-    0x72: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x73: Instr{ kind: InstrKind.RRA, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0x74: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x75: Instr{ kind: InstrKind.ADC, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x76: Instr{ kind: InstrKind.ROR, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x77: Instr{ kind: InstrKind.RRA, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x70: Instr{ kind: .BVS, addr_mode: .Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x71: Instr{ kind: .ADC, addr_mode: .IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0x72: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x73: Instr{ kind: .RRA, addr_mode: .IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0x74: Instr{ kind: .NOP, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x75: Instr{ kind: .ADC, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x76: Instr{ kind: .ROR, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x77: Instr{ kind: .RRA, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
 
-    0x78: Instr{ kind: InstrKind.SEI, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x79: Instr{ kind: InstrKind.ADC, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x7A: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x7B: Instr{ kind: InstrKind.RRA, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0x7C: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x7D: Instr{ kind: InstrKind.ADC, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0x7E: Instr{ kind: InstrKind.ROR, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0x7F: Instr{ kind: InstrKind.RRA, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x78: Instr{ kind: .SEI, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x79: Instr{ kind: .ADC, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x7A: Instr{ kind: .NOP, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x7B: Instr{ kind: .RRA, addr_mode: .AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x7C: Instr{ kind: .NOP, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x7D: Instr{ kind: .ADC, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0x7E: Instr{ kind: .ROR, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0x7F: Instr{ kind: .RRA, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
 
-    0x80: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x81: Instr{ kind: InstrKind.STA, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x82: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x83: Instr{ kind: InstrKind.SAX, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x84: Instr{ kind: InstrKind.STY, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x85: Instr{ kind: InstrKind.STA, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x86: Instr{ kind: InstrKind.STX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0x87: Instr{ kind: InstrKind.SAX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x80: Instr{ kind: .NOP, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x81: Instr{ kind: .STA, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x82: Instr{ kind: .NOP, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x83: Instr{ kind: .SAX, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x84: Instr{ kind: .STY, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x85: Instr{ kind: .STA, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x86: Instr{ kind: .STX, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0x87: Instr{ kind: .SAX, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
 
-    0x88: Instr{ kind: InstrKind.DEY, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x89: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x8A: Instr{ kind: InstrKind.TXA, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x8B: Instr{ kind: InstrKind.XAA, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0x8C: Instr{ kind: InstrKind.STY, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x8D: Instr{ kind: InstrKind.STA, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x8E: Instr{ kind: InstrKind.STX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0x8F: Instr{ kind: InstrKind.SAX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x88: Instr{ kind: .DEY, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x89: Instr{ kind: .NOP, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x8A: Instr{ kind: .TXA, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x8B: Instr{ kind: .XAA, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0x8C: Instr{ kind: .STY, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x8D: Instr{ kind: .STA, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x8E: Instr{ kind: .STX, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0x8F: Instr{ kind: .SAX, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
 
-    0x90: Instr{ kind: InstrKind.BCC, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
-    0x91: Instr{ kind: InstrKind.STA, addr_mode: AddrMode.IndirectY,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x92: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0x93: Instr{ kind: InstrKind.AHX, addr_mode: AddrMode.IndirectY,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0x94: Instr{ kind: InstrKind.STY, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x95: Instr{ kind: InstrKind.STA, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x96: Instr{ kind: InstrKind.STX, addr_mode: AddrMode.ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0x97: Instr{ kind: InstrKind.SAX, addr_mode: AddrMode.ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x90: Instr{ kind: .BCC, addr_mode: .Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0x91: Instr{ kind: .STA, addr_mode: .IndirectY,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x92: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0x93: Instr{ kind: .AHX, addr_mode: .IndirectY,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0x94: Instr{ kind: .STY, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x95: Instr{ kind: .STA, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x96: Instr{ kind: .STX, addr_mode: .ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0x97: Instr{ kind: .SAX, addr_mode: .ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
 
-    0x98: Instr{ kind: InstrKind.TYA, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x99: Instr{ kind: InstrKind.STA, addr_mode: AddrMode.AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
-    0x9A: Instr{ kind: InstrKind.TXS, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0x9B: Instr{ kind: InstrKind.TAS, addr_mode: AddrMode.AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
-    0x9C: Instr{ kind: InstrKind.SHY, addr_mode: AddrMode.AbsoluteX,  cycles: 5, bytes: 3, page_cross_penalty: false },
-    0x9D: Instr{ kind: InstrKind.STA, addr_mode: AddrMode.AbsoluteX,  cycles: 5, bytes: 3, page_cross_penalty: false },
-    0x9E: Instr{ kind: InstrKind.SHX, addr_mode: AddrMode.AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
-    0x9F: Instr{ kind: InstrKind.AHX, addr_mode: AddrMode.AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x98: Instr{ kind: .TYA, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x99: Instr{ kind: .STA, addr_mode: .AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9A: Instr{ kind: .TXS, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0x9B: Instr{ kind: .TAS, addr_mode: .AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9C: Instr{ kind: .SHY, addr_mode: .AbsoluteX,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9D: Instr{ kind: .STA, addr_mode: .AbsoluteX,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9E: Instr{ kind: .SHX, addr_mode: .AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
+    0x9F: Instr{ kind: .AHX, addr_mode: .AbsoluteY,  cycles: 5, bytes: 3, page_cross_penalty: false },
 
-    0xA0: Instr{ kind: InstrKind.LDY, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xA1: Instr{ kind: InstrKind.LDA, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0xA2: Instr{ kind: InstrKind.LDX, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xA3: Instr{ kind: InstrKind.LAX, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0xA4: Instr{ kind: InstrKind.LDY, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0xA5: Instr{ kind: InstrKind.LDA, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0xA6: Instr{ kind: InstrKind.LDX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0xA7: Instr{ kind: InstrKind.LAX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xA0: Instr{ kind: .LDY, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xA1: Instr{ kind: .LDA, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xA2: Instr{ kind: .LDX, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xA3: Instr{ kind: .LAX, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xA4: Instr{ kind: .LDY, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xA5: Instr{ kind: .LDA, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xA6: Instr{ kind: .LDX, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xA7: Instr{ kind: .LAX, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
 
-    0xA8: Instr{ kind: InstrKind.TAY, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xA9: Instr{ kind: InstrKind.LDA, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xAA: Instr{ kind: InstrKind.TAX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xAB: Instr{ kind: InstrKind.LAX, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xAC: Instr{ kind: InstrKind.LDY, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0xAD: Instr{ kind: InstrKind.LDA, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0xAE: Instr{ kind: InstrKind.LDX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0xAF: Instr{ kind: InstrKind.LAX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xA8: Instr{ kind: .TAY, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xA9: Instr{ kind: .LDA, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xAA: Instr{ kind: .TAX, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xAB: Instr{ kind: .LAX, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xAC: Instr{ kind: .LDY, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xAD: Instr{ kind: .LDA, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xAE: Instr{ kind: .LDX, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xAF: Instr{ kind: .LAX, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
 
-    0xB0: Instr{ kind: InstrKind.BCS, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
-    0xB1: Instr{ kind: InstrKind.LDA, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
-    0xB2: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0xB3: Instr{ kind: InstrKind.LAX, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
-    0xB4: Instr{ kind: InstrKind.LDY, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0xB5: Instr{ kind: InstrKind.LDA, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0xB6: Instr{ kind: InstrKind.LDX, addr_mode: AddrMode.ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0xB7: Instr{ kind: InstrKind.LAX, addr_mode: AddrMode.ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xB0: Instr{ kind: .BCS, addr_mode: .Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0xB1: Instr{ kind: .LDA, addr_mode: .IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0xB2: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0xB3: Instr{ kind: .LAX, addr_mode: .IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0xB4: Instr{ kind: .LDY, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xB5: Instr{ kind: .LDA, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xB6: Instr{ kind: .LDX, addr_mode: .ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xB7: Instr{ kind: .LAX, addr_mode: .ZeroPageY,  cycles: 4, bytes: 2, page_cross_penalty: false },
 
-    0xB8: Instr{ kind: InstrKind.CLV, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xB9: Instr{ kind: InstrKind.LDA, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xBA: Instr{ kind: InstrKind.TSX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xBB: Instr{ kind: InstrKind.LAS, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xBC: Instr{ kind: InstrKind.LDY, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xBD: Instr{ kind: InstrKind.LDA, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xBE: Instr{ kind: InstrKind.LDX, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xBF: Instr{ kind: InstrKind.LAX, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xB8: Instr{ kind: .CLV, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xB9: Instr{ kind: .LDA, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBA: Instr{ kind: .TSX, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xBB: Instr{ kind: .LAS, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBC: Instr{ kind: .LDY, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBD: Instr{ kind: .LDA, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBE: Instr{ kind: .LDX, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xBF: Instr{ kind: .LAX, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
 
-    0xC0: Instr{ kind: InstrKind.CPY, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xC1: Instr{ kind: InstrKind.CMP, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0xC2: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xC3: Instr{ kind: InstrKind.DCP, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0xC4: Instr{ kind: InstrKind.CPY, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0xC5: Instr{ kind: InstrKind.CMP, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0xC6: Instr{ kind: InstrKind.DEC, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
-    0xC7: Instr{ kind: InstrKind.DCP, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0xC0: Instr{ kind: .CPY, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xC1: Instr{ kind: .CMP, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xC2: Instr{ kind: .NOP, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xC3: Instr{ kind: .DCP, addr_mode: .IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xC4: Instr{ kind: .CPY, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xC5: Instr{ kind: .CMP, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xC6: Instr{ kind: .DEC, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0xC7: Instr{ kind: .DCP, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
 
-    0xC8: Instr{ kind: InstrKind.INY, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xC9: Instr{ kind: InstrKind.CMP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xCA: Instr{ kind: InstrKind.DEX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xCB: Instr{ kind: InstrKind.AXS, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xCC: Instr{ kind: InstrKind.CPY, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0xCD: Instr{ kind: InstrKind.CMP, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0xCE: Instr{ kind: InstrKind.DEC, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
-    0xCF: Instr{ kind: InstrKind.DCP, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0xC8: Instr{ kind: .INY, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xC9: Instr{ kind: .CMP, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xCA: Instr{ kind: .DEX, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xCB: Instr{ kind: .AXS, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xCC: Instr{ kind: .CPY, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xCD: Instr{ kind: .CMP, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xCE: Instr{ kind: .DEC, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0xCF: Instr{ kind: .DCP, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
 
-    0xD0: Instr{ kind: InstrKind.BNE, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
-    0xD1: Instr{ kind: InstrKind.CMP, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
-    0xD2: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0xD3: Instr{ kind: InstrKind.DCP, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0xD4: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0xD5: Instr{ kind: InstrKind.CMP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0xD6: Instr{ kind: InstrKind.DEC, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0xD7: Instr{ kind: InstrKind.DCP, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xD0: Instr{ kind: .BNE, addr_mode: .Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0xD1: Instr{ kind: .CMP, addr_mode: .IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0xD2: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0xD3: Instr{ kind: .DCP, addr_mode: .IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xD4: Instr{ kind: .NOP, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xD5: Instr{ kind: .CMP, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xD6: Instr{ kind: .DEC, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xD7: Instr{ kind: .DCP, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
 
-    0xD8: Instr{ kind: InstrKind.CLD, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xD9: Instr{ kind: InstrKind.CMP, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xDA: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xDB: Instr{ kind: InstrKind.DCP, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0xDC: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xDD: Instr{ kind: InstrKind.CMP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xDE: Instr{ kind: InstrKind.DEC, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0xDF: Instr{ kind: InstrKind.DCP, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xD8: Instr{ kind: .CLD, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xD9: Instr{ kind: .CMP, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xDA: Instr{ kind: .NOP, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xDB: Instr{ kind: .DCP, addr_mode: .AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xDC: Instr{ kind: .NOP, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xDD: Instr{ kind: .CMP, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xDE: Instr{ kind: .DEC, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xDF: Instr{ kind: .DCP, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
 
-    0xE0: Instr{ kind: InstrKind.CPX, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xE1: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0xE2: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xE3: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0xE4: Instr{ kind: InstrKind.CPX, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0xE5: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
-    0xE6: Instr{ kind: InstrKind.INC, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
-    0xE7: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0xE0: Instr{ kind: .CPX, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xE1: Instr{ kind: .SBC, addr_mode: .IndirectX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xE2: Instr{ kind: .NOP, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xE3: Instr{ kind: .ISB, addr_mode: .IndirectX,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xE4: Instr{ kind: .CPX, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xE5: Instr{ kind: .SBC, addr_mode: .ZeroPage,   cycles: 3, bytes: 2, page_cross_penalty: false },
+    0xE6: Instr{ kind: .INC, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
+    0xE7: Instr{ kind: .ISB, addr_mode: .ZeroPage,   cycles: 5, bytes: 2, page_cross_penalty: false },
 
-    0xE8: Instr{ kind: InstrKind.INX, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xE9: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xEA: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xEB: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
-    0xEC: Instr{ kind: InstrKind.CPX, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0xED: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
-    0xEE: Instr{ kind: InstrKind.INC, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
-    0xEF: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0xE8: Instr{ kind: .INX, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xE9: Instr{ kind: .SBC, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xEA: Instr{ kind: .NOP, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xEB: Instr{ kind: .SBC, addr_mode: .Immediate,  cycles: 2, bytes: 2, page_cross_penalty: false },
+    0xEC: Instr{ kind: .CPX, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xED: Instr{ kind: .SBC, addr_mode: .Absolute,   cycles: 4, bytes: 3, page_cross_penalty: false },
+    0xEE: Instr{ kind: .INC, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
+    0xEF: Instr{ kind: .ISB, addr_mode: .Absolute,   cycles: 6, bytes: 3, page_cross_penalty: false },
 
-    0xF0: Instr{ kind: InstrKind.BEQ, addr_mode: AddrMode.Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
-    0xF1: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
-    0xF2: Instr{ kind: InstrKind.STP, addr_mode: AddrMode.Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
-    0xF3: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
-    0xF4: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0xF5: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
-    0xF6: Instr{ kind: InstrKind.INC, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
-    0xF7: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xF0: Instr{ kind: .BEQ, addr_mode: .Relative,   cycles: 2, bytes: 2, page_cross_penalty: true  },
+    0xF1: Instr{ kind: .SBC, addr_mode: .IndirectY,  cycles: 5, bytes: 2, page_cross_penalty: true  },
+    0xF2: Instr{ kind: .STP, addr_mode: .Implied,    cycles: 0, bytes: 1, page_cross_penalty: false },
+    0xF3: Instr{ kind: .ISB, addr_mode: .IndirectY,  cycles: 8, bytes: 2, page_cross_penalty: false },
+    0xF4: Instr{ kind: .NOP, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xF5: Instr{ kind: .SBC, addr_mode: .ZeroPageX,  cycles: 4, bytes: 2, page_cross_penalty: false },
+    0xF6: Instr{ kind: .INC, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
+    0xF7: Instr{ kind: .ISB, addr_mode: .ZeroPageX,  cycles: 6, bytes: 2, page_cross_penalty: false },
 
-    0xF8: Instr{ kind: InstrKind.SED, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xF9: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xFA: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
-    0xFB: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0xFC: Instr{ kind: InstrKind.NOP, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xFD: Instr{ kind: InstrKind.SBC, addr_mode: AddrMode.AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
-    0xFE: Instr{ kind: InstrKind.INC, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
-    0xFF: Instr{ kind: InstrKind.ISB, addr_mode: AddrMode.AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xF8: Instr{ kind: .SED, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xF9: Instr{ kind: .SBC, addr_mode: .AbsoluteY,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xFA: Instr{ kind: .NOP, addr_mode: .Implied,    cycles: 2, bytes: 1, page_cross_penalty: false },
+    0xFB: Instr{ kind: .ISB, addr_mode: .AbsoluteY,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xFC: Instr{ kind: .NOP, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xFD: Instr{ kind: .SBC, addr_mode: .AbsoluteX,  cycles: 4, bytes: 3, page_cross_penalty: true  },
+    0xFE: Instr{ kind: .INC, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
+    0xFF: Instr{ kind: .ISB, addr_mode: .AbsoluteX,  cycles: 7, bytes: 3, page_cross_penalty: false },
 ];
