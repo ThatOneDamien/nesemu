@@ -13,22 +13,23 @@ pub struct Renderer
 
 #const renderer = &context.renderer;
 
-pub fn init(window: *sdl::Window) void
+pub fn init(window: *sdl::Window) bool 
 {
     renderer.sdl_ref = sdl::CreateRenderer(window, null);
     if renderer.sdl_ref == null {
         io::printf("CreateRenderer failed: %s\n", sdl::GetError());
         sdl::Quit();
-        return;
+        return false;
     }
 
     renderer.sdl_texture = sdl::CreateTexture(renderer.sdl_ref!, .RGBA32, .STREAMING, 256, 240);
     if renderer.sdl_texture == null {
         io::printf("CreateTexture failed: %s\n", sdl::GetError());
         sdl::Quit();
-        return;
+        return false;
     }
 
+    return true;
 }
 
 pub fn set_pixel(x: usize, y: usize, pixel: uint) void

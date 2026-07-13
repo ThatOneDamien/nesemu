@@ -16,6 +16,7 @@ pub struct Bus
 	dma_data: ubyte,
 	dma_dummy: bool,
 	dma_transfer: bool,
+    open_bus: ubyte,
 }
 
 pub struct Controller
@@ -70,19 +71,16 @@ pub fn clock() void
 				}
 
             }
+            apu::clock();
         }
         else 
         {
-            cpu::clock();
             apu::clock();
+            cpu::clock();
         }
     }
 
-    if context.cpu.nmi_pending {
-        cpu::nmi();
-        context.cpu.nmi_pending = false;
-    }
-    
+
     bus.system_clock++;
 }
 
@@ -90,36 +88,29 @@ pub fn clock() void
 @nodiscard
 pub fn read(addr: ushort) ubyte
 {
-    // 2KB RAM mirrored
-    if addr < 0x2000 {
-        return context.ram[addr & 0x7FF];
+    var value: ubyte = void;
+    if !context.cart!.mapper.cpu_read(addr, &value) {
+        value = 
+        // 2KB RAM mirrored
+        if addr < 0x2000 => context.ram[addr & 0x7FF]
+        // PPU registers mirrored every 8 bytes 
+        else if addr < 0x4000 => ppu::read_register(addr & 0x7)
+        else if addr == 0x4015 => apu::read_status()
+        else if addr == 0x4016 {
+            const ret = (bus.open_bus & 0xE0) | (bus.controllers[0].shift & 1);
+            bus.controllers[0].shift >>= 1;
+            => ret;
+        }
+        else if addr == 0x4017 {
+            const ret = (bus.open_bus & 0xE0) | bus.controllers[1].shift & 1;
+            bus.controllers[1].shift >>= 1;
+            => ret;
+        }
+        else => bus.open_bus;
     }
 
-    // PPU registers mirrored every 8 bytes
-    if addr < 0x4000 {
-        return ppu::read_register(addr & 0x7);
-    }
-    
-    if addr == 0x4015 {
-        return apu::read_status();
-    }
-    if addr == 0x4016 {
-        const ret = bus.controllers[0].shift & 1;
-        bus.controllers[0].shift >>= 1;
-        return ret;
-    }
-    if addr == 0x4017 {
-        const ret = bus.controllers[1].shift & 1;
-        bus.controllers[1].shift >>= 1;
-        return ret;
-    }
-        // APU + IO
-    if addr < 0x4020 {
-        io::printf("ERROR: Bad read.");
-        return 0xFF;
-    }
-    
-    return context.cart!.mapper.cpu_read(addr);
+    bus.open_bus = value;
+    return value;
 }
 
 @nodiscard
@@ -130,7 +121,8 @@ pub fn read16(addr: ushort) ushort
 
 pub fn write(addr: ushort, value: ubyte) void
 {
-    
+    bus.open_bus = value;
+
     // 2KB RAM mirrored
     if addr < 0x2000 {
         context.ram[addr & 0x7FF] = value;
@@ -161,11 +153,15 @@ pub fn write(addr: ushort, value: ubyte) void
         return;
     }
 
-        // APU + IO
-    if addr < 0x4020 {
+    if addr <= 0x4017 {
         apu::write(addr & 0x1F, value);
         return;
     }
+
+    if addr < 0x4020 {
+        return;
+    }
+
 
     context.cart!.mapper.cpu_write(addr, value);
 }

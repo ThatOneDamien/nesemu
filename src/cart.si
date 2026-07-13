@@ -51,7 +51,7 @@ pub struct MMC1Data
 
 pub struct Mapper
 {
-    cpu_read: fn (ushort) ubyte,
+    cpu_read: fn (ushort, *ubyte) bool,
     cpu_write: fn (ushort, ubyte) void,
     ppu_read: fn (ushort) ubyte,
     ppu_write: fn(ushort, ubyte) void,
@@ -115,44 +115,47 @@ pub fn NesCart.from_file(file_path: CString) ?NesCart
     };
 }
 
-fn nrom_cpu_read(addr: ushort) ubyte
+fn nrom_cpu_read(addr: ushort, value: *ubyte) bool 
 {
     if addr >= 0x8000 {
         var final: ushort = addr - 0x8000;
         if context.cart!.prg.len == 0x4000 {
             final &= 0x3FFF;
         }
-        return context.cart!.prg[final];
+        *value = context.cart!.prg[final];
+        return true;
     }
     else if addr >= 0x6000 && context.cart!.sram != null {
-        return context.cart!.sram![addr - 0x6000];
+        *value = context.cart!.sram![addr - 0x6000];
+        return true;
     }
 
-    io::printf("ERROR: Bad read. (Address 0x%.4hx)\n", addr);
-    return 0xFF;
+    return false;
 }
 
 fn nrom_cpu_write(addr: ushort, value: ubyte) void 
 {
     if addr >= 0x6000 && addr < 0x8000 && context.cart!.sram != null {
         context.cart!.sram![addr - 0x6000] = value;
+        return;
     }
-    io::printf("ERROR: Bad write. (Address 0x%.4hx)\n", addr);
+
 }
 
-fn nrom_ppu_read(addr: ushort) ubyte
+fn nrom_ppu_read(addr: ushort) ubyte 
 {
     // CHR ROM/RAM is mapped directly
     if addr < 0x2000 {
         return context.cart!.chr[addr];
     }
 
-    return 0;
+    // Nametables
+    const mirrored = context.cart!.mapper.mirror_vram_addr(addr);
+    return context.ppu.vram[mirrored];
 }
 
 fn nrom_ppu_write(_addr: ushort, _value: ubyte) void 
 {
-
 }
 
 fn nrom_mirror_vram_addr(addr: ushort) ushort
@@ -175,28 +178,23 @@ fn nrom_mirror_vram_addr(addr: ushort) ushort
     return 0;
 }
 
-fn mmc1_cpu_read(addr: ushort) ubyte
+fn mmc1_cpu_read(addr: ushort, value: *ubyte) bool 
 {
     const data: *MMC1Data = &context.cart!.data.mmc1;
     if addr >= 0x8000 {
 
         var offset: uint = 0;
-
         const prg_size = cast<uint>(context.cart!.prg.len);
 
         switch (data.control >> 2) & 0x03 {
 
-        // -------------------------
         // 32KB mode
-        // -------------------------
         case 0:
         case 1:
             const bank = (data.prg_bank >> 1) & ((prg_size / 0x8000) - 1);
             offset = (addr - 0x8000) + (bank * 0x8000);
 
-        // -------------------------
         // Fix first 16KB, switch last
-        // -------------------------
         case 2:
             if addr < 0xC000 {
                 offset = addr - 0x8000;
@@ -204,9 +202,7 @@ fn mmc1_cpu_read(addr: ushort) ubyte
                 offset = (data.prg_bank * 0x4000) + (addr - 0xC000);
             }
 
-        // -------------------------
         // Switch first, fix last 16KB
-        // -------------------------
         case 3:
             if addr < 0xC000 {
                 offset = (data.prg_bank * 0x4000) + (addr - 0x8000);
@@ -215,40 +211,57 @@ fn mmc1_cpu_read(addr: ushort) ubyte
             }
         }
 
-        return context.cart!.prg[offset];
+        *value = context.cart!.prg[offset];
+        return true;
     }
     else if addr >= 0x6000 {
         if context.cart!.sram!.len == 0 {
-            return 0; // or open bus
+            return false;
         }
-        return context.cart!.sram![addr - 0x6000];
+        *value = context.cart!.sram![addr - 0x6000];
+        return true;
     }
 
     // -------------------------
     // invalid range
     // -------------------------
-    return 0;
+    return false;
 }
 
-pub fn mmc1_cpu_write(_addr: ushort, value: ubyte) void
+pub fn mmc1_cpu_write(addr: ushort, value: ubyte) void 
 {
     const data: *MMC1Data = &context.cart!.data.mmc1;
-    if (value & 0x80) == 0x80 {
-        data.shift = 0x10;        // reset to 10000
-        data.shift_count = 0;
-        data.control |= 0x0C;     // default PRG mode behavior
+
+    if (value & 0x80) != 0 {
+        data.shift = 0x10;
+        data.control |= 0x0C;
         return;
     }
 
+    const complete = (data.shift & 1) != 0;
+
     data.shift >>= 1;
     data.shift |= (value & 1) << 4;
-    data.shift_count++;
 
-    if (data.shift_count == 5) {
-        // commit_register(addr, shift);
+    if complete {
+        const result = data.shift;
+
+        if addr < 0xA000 {
+            data.control = result;
+        }
+        else if addr < 0xC000 {
+            data.chr_bank0 = result;
+        }
+        else if addr < 0xE000 {
+            data.chr_bank1 = result;
+        }
+        else {
+            data.prg_bank = result;
+        }
+
         data.shift = 0x10;
-        data.shift_count = 0;
     }
+
 }
 
 fn mmc1_ppu_read(addr: ushort) ubyte

@@ -1,36 +1,96 @@
 import io;
 import context;
+import audio;
+import sdl;
+import bus;
+import cpu;
 
 pub struct APU
 {
+    debug_cycles: ulong,
+    debug_samples: ulong,
+
     cpu_cycles: ulong,
+
     frame_mode: bool,
-    frame_irq_inhibit: bool,
-    frame_irq: bool,
+    irq_inhibit: bool,
     frame_step: ubyte,
-    frame_counter: uint,
+    frame_counter: ulong,
+
+    frame_irq: bool,
     dmc_irq: bool,
 
     pulse1: PulseChannel,
     pulse2: PulseChannel,
-    // triangle: TriangleChannel,
-    // noise: NoiseChannel,
-    // dmc: DMCChannel,
+    triangle: TriangleChannel,
+    noise: NoiseChannel,
+    dmc: DMCChannel,
+
+    sample_ready: bool,
+    sample_clock: double,
 }
 
 pub struct PulseChannel
 {
     enabled: bool,
-    halted: bool,
+    timer: ushort,
+    reload: ushort,
+    duty: ubyte,
+    seq_step: ubyte,
+    length_counter: LengthCounter,
+    env: Envelope,
+    sweep: Sweep,
+    output: ubyte,
+}
+
+pub struct TriangleChannel
+{
+    enabled: bool,
     timer: ushort,
     reload: ushort,
     seq_step: ubyte,
-    duty: ubyte,
+    length_counter: LengthCounter,
+    linear_counter: ubyte,
+    linear_reload: ubyte,
+    linear_reload_flag: bool,
+    control_flag: bool,
+    output: ubyte,
+}
+
+pub struct NoiseChannel
+{
+    enabled: bool,
+    timer: ushort,
+    reload: ushort,
+    shift_register: ushort,
+    mode: bool,
+    length_counter: LengthCounter,
+    env: Envelope,
+    output: ubyte,
+}
+
+pub struct DMCChannel
+{
+    enabled: bool,
+    irq_enable: bool,
+    loop: bool,
+    timer: ushort,
+    reload: ushort,
     output: ubyte,
 
-    env: Envelope,
-    length_counter: ubyte,
-    sweep: Sweep,
+    sample_address: ushort,
+    current_address: ushort,
+
+    sample_length: ushort,
+    bytes_remaining: ushort,
+
+    shift_register: ubyte,
+    bits_remaining: ubyte,
+
+    sample_buffer: ubyte,
+    sample_buffer_empty: bool,
+
+    silence: bool,
 }
 
 pub struct Envelope
@@ -58,70 +118,238 @@ pub struct Sweep
     mute: bool,
 }
 
+pub struct LengthCounter
+{
+    val: ubyte,
+}
+
 #const apu: *APU = &context.apu;
-const length_table: [*]ubyte = [   10, 254, 20,  2, 40,  4, 80,  6,
-							      160,   8, 60, 10, 14, 12, 26, 14,
-							       12,  16, 24, 18, 48, 20, 96, 22,
-							      192,  24, 72, 26, 16, 28, 32, 30 ];
+const length_table: [*]ubyte = [
+    10, 254, 20,  2, 40,  4, 80,  6,
+   160,   8, 60, 10, 14, 12, 26, 14,
+    12,  16, 24, 18, 48, 20, 96, 22,
+   192,  24, 72, 26, 16, 28, 32, 30 
+];
 
 const duty_table: [4]ubyte = [
     0b0000_0001,
     0b0000_0011,
     0b0000_1111,
-    0b1111_1001,
+    0b1111_1000,
 ];
 
+const triangle_table: [32]ubyte =
+[
+    15, 14, 13, 12,
+    11, 10,  9,  8,
+     7,  6,  5,  4,
+     3,  2,  1,  0,
+
+     0,  1,  2,  3,
+     4,  5,  6,  7,
+     8,  9, 10, 11,
+    12, 13, 14, 15
+];
+
+const noise_period_table: [16]ushort = [
+     4,    8,   16,   32,
+    64,   96,  128,  160,
+   202,  254,  380,  508,
+  1016, 2034, 4068, 4068,
+];
+
+const dmc_rate_table: [16]ushort = [
+    428, 380, 340, 320,
+    286, 254, 226, 214,
+    190, 160, 142, 128,
+    106,  84,  72,  54
+];
+
+pub fn power() void
+{
+    apu.cpu_cycles = 0;
+
+    apu.frame_mode = false;
+    apu.irq_inhibit = false;
+    apu.frame_step = 0;
+    apu.frame_counter = 0;
+
+    apu.frame_irq = false;
+    apu.dmc_irq = false;
+
+    apu.sample_clock = 0.0;
+
+
+    //
+    // Pulse channels
+    //
+
+    apu.pulse1.enabled = false;
+    apu.pulse1.timer = 0;
+    apu.pulse1.reload = 0;
+    apu.pulse1.duty = 0;
+    apu.pulse1.seq_step = 0;
+    apu.pulse1.output = 0;
+
+    apu.pulse1.length_counter.val = 0;
+
+    apu.pulse1.env.start = false;
+    apu.pulse1.env.loop = false;
+    apu.pulse1.env.constant = false;
+    apu.pulse1.env.divider = 0;
+    apu.pulse1.env.period = 0;
+    apu.pulse1.env.decay = 0;
+
+    apu.pulse1.sweep.enabled = false;
+    apu.pulse1.sweep.negate = false;
+    apu.pulse1.sweep.reload = false;
+    apu.pulse1.sweep.period = 0;
+    apu.pulse1.sweep.shift = 0;
+    apu.pulse1.sweep.divider = 0;
+    apu.pulse1.sweep.mute = false;
+
+
+
+    apu.pulse2.enabled = false;
+    apu.pulse2.timer = 0;
+    apu.pulse2.reload = 0;
+    apu.pulse2.duty = 0;
+    apu.pulse2.seq_step = 0;
+    apu.pulse2.output = 0;
+
+    apu.pulse2.length_counter.val = 0;
+
+    apu.pulse2.env.start = false;
+    apu.pulse2.env.loop = false;
+    apu.pulse2.env.constant = false;
+    apu.pulse2.env.divider = 0;
+    apu.pulse2.env.period = 0;
+    apu.pulse2.env.decay = 0;
+
+    apu.pulse2.sweep.enabled = false;
+    apu.pulse2.sweep.negate = false;
+    apu.pulse2.sweep.reload = false;
+    apu.pulse2.sweep.period = 0;
+    apu.pulse2.sweep.shift = 0;
+    apu.pulse2.sweep.divider = 0;
+    apu.pulse2.sweep.mute = false;
+
+
+
+    //
+    // Triangle
+    //
+
+    apu.triangle.enabled = false;
+    apu.triangle.timer = 0;
+    apu.triangle.reload = 0;
+    apu.triangle.seq_step = 0;
+    apu.triangle.output = 0;
+
+    apu.triangle.length_counter.val = 0;
+
+    apu.triangle.linear_counter = 0;
+    apu.triangle.linear_reload = 0;
+    apu.triangle.linear_reload_flag = false;
+    apu.triangle.control_flag = false;
+
+
+
+    //
+    // Noise
+    //
+
+    apu.noise.enabled = false;
+    apu.noise.timer = 0;
+    apu.noise.reload = 0;
+
+    // NES noise shift register powers on as 1
+    apu.noise.shift_register = 0xDBDB;
+
+    apu.noise.mode = false;
+    apu.noise.output = 0;
+
+    apu.noise.length_counter.val = 0;
+
+    apu.noise.env.start = false;
+    apu.noise.env.loop = false;
+    apu.noise.env.constant = false;
+    apu.noise.env.divider = 0;
+    apu.noise.env.period = 0;
+    apu.noise.env.decay = 0;
+
+
+
+    //
+    // DMC
+    //
+
+    apu.dmc.enabled = false;
+    apu.dmc.irq_enable = false;
+    apu.dmc.loop = false;
+
+    apu.dmc.timer = 0;
+    apu.dmc.reload = 0;
+
+    apu.dmc.output = 0;
+
+    apu.dmc.sample_address = 0;
+    apu.dmc.current_address = 0;
+
+    apu.dmc.sample_length = 0;
+    apu.dmc.bytes_remaining = 0;
+
+    apu.dmc.shift_register = 0;
+    apu.dmc.bits_remaining = 8;
+
+    apu.dmc.sample_buffer = 0;
+    apu.dmc.sample_buffer_empty = true;
+
+    apu.dmc.silence = true;
+}
 
 pub fn clock() void
 {
+    apu.debug_cycles++;
     apu.cpu_cycles++;
 
-    // Pulse timers run every other CPU cycle
+    // Timer clocks
+    apu.triangle.timer_clock();
+    apu.dmc.timer_clock();
+
+    // Pulse + Noise only tick every other CPU cycle
     if (apu.cpu_cycles & 1) == 0
     {
         apu.pulse1.timer_clock();
         apu.pulse2.timer_clock();
+        apu.noise.timer_clock();
     }
 
-    // Advance frame sequencer
+
+    // Frame sequencer
     apu.frame_counter++;
 
     if !apu.frame_mode
     {
-        // -----------------------
         // 4-step sequence
-        // -----------------------
 
         switch apu.frame_counter
         {
         case 3729:
-            apu.pulse1.env.clock();
-            apu.pulse2.env.clock();
+            quarter_frame();
+
         case 7457:
-            apu.pulse1.env.clock();
-            apu.pulse2.env.clock();
-
-            apu.pulse1.length_counter_clock();
-            apu.pulse2.length_counter_clock();
-
-            apu.pulse1.sweep_clock(true);
-            apu.pulse2.sweep_clock(false);
+            quarter_frame();
+            half_frame();
 
         case 11186:
-            apu.pulse1.env.clock();
-            apu.pulse2.env.clock();
+            quarter_frame();
 
         case 14915:
-            apu.pulse1.env.clock();
-            apu.pulse2.env.clock();
+            quarter_frame();
+            half_frame();
 
-            apu.pulse1.length_counter_clock();
-            apu.pulse2.length_counter_clock();
-
-            apu.pulse1.sweep_clock(true);
-            apu.pulse2.sweep_clock(false);
-
-            if !apu.frame_irq_inhibit
+            if !apu.irq_inhibit
             {
                 apu.frame_irq = true;
             }
@@ -131,51 +359,107 @@ pub fn clock() void
     }
     else
     {
-        // -----------------------
         // 5-step sequence
-        // -----------------------
 
         switch apu.frame_counter
         {
         case 3729:
-            apu.pulse1.env.clock();
-            apu.pulse2.env.clock();
+            quarter_frame();
+
         case 7457:
-            apu.pulse1.env.clock();
-            apu.pulse2.env.clock();
+            quarter_frame();
+            half_frame();
 
-            apu.pulse1.length_counter_clock();
-            apu.pulse2.length_counter_clock();
-
-            apu.pulse1.sweep_clock(true);
-            apu.pulse2.sweep_clock(false);
         case 11186:
-            apu.pulse1.env.clock();
-            apu.pulse2.env.clock();
+            quarter_frame();
+
+        case 14915:
+            quarter_frame();
+            half_frame();
+
         case 18641:
-            apu.pulse1.env.clock();
-            apu.pulse2.env.clock();
-
-            apu.pulse1.length_counter_clock();
-            apu.pulse2.length_counter_clock();
-
-            apu.pulse1.sweep_clock(true);
-            apu.pulse2.sweep_clock(false);
-
             apu.frame_counter = 0;
         }
     }
+
+    // Generate audio samples at the correct rate
+    apu.sample_clock += 1.0;
+    const threshold = 1789772.72727 / cast<double>(context.audio_player.sample_rate);
+
+    if apu.sample_clock >= threshold
+    {
+        apu.debug_samples++;
+        apu.sample_clock -= threshold;
+        const sample = sample_audio();
+        sdl::PutAudioStreamData(context.audio_player.stream!, &sample, #sizeof(float));
+        // audio::push_sample(sample);
+    }
+}
+
+pub fn sample_audio() float
+{
+    apu.pulse1.update_output();
+    apu.pulse2.update_output();
+    apu.triangle.update_output();
+    apu.noise.update_output();
+
+    const pulse1 = apu.pulse1.output;
+    const pulse2 = apu.pulse2.output;
+
+    const triangle = apu.triangle.output;
+    const noise = apu.noise.output;
+    const dmc = apu.dmc.output;
+
+
+    var pulse_out: double = 0;
+
+    const pulse_sum = pulse1 + pulse2;
+
+    if pulse_sum > 0
+    {
+        pulse_out = 95.88 / ((8128.0 / pulse_sum) + 100.0);
+    }
+
+
+    const tnd_sum = (triangle / 8227.0) + (noise / 12241.0) + (dmc / 22638.0);
+    var tnd_out: double = 0;
+
+    if tnd_sum > 0
+    {
+        tnd_out = 159.79 / ((1.0 / tnd_sum) + 100.0);
+    }
+
+    return cast<float>(pulse_out + tnd_out) * 0.5;
+}
+
+fn quarter_frame() void
+{
+    apu.pulse1.env.clock();
+    apu.pulse2.env.clock();
+    apu.noise.env.clock();
+    apu.triangle.linear_clock();
+}
+
+fn half_frame() void
+{
+    apu.pulse1.length_counter.clock(apu.pulse1.env.loop);
+    apu.pulse2.length_counter.clock(apu.pulse2.env.loop);
+    apu.triangle.length_counter.clock(apu.triangle.control_flag);
+    apu.noise.length_counter.clock(apu.noise.env.loop);
+
+    apu.pulse1.sweep_clock();
+    apu.pulse2.sweep_clock();
 }
 
 pub fn read_status() ubyte
 {
     var status: ubyte = 0;
 
-    if apu.pulse1.length_counter > 0 {
+    if apu.pulse1.length_counter.val > 0 {    // Generate audio samples at the correct rate
         status |= 0x01;
     }
 
-    if apu.pulse2.length_counter > 0 {
+    if apu.pulse2.length_counter.val > 0 {
         status |= 0x02;
     }
 
@@ -207,123 +491,183 @@ pub fn read_status() ubyte
 
 pub fn write(addr: ushort, value: ubyte) void
 {
-    const reg = addr & 0x001F;
-
-    switch reg
+    const a = addr & 0x1F;
+    switch a
     {
-    case 0x00:
-        apu.pulse1.duty = (value >> 6) & 0x03;
-        apu.pulse1.env.constant = (value & 0x10) != 0;
-        apu.pulse1.env.loop = (value & 0x20) != 0;
-        apu.pulse1.halted = (value & 0x20) != 0;
-        apu.pulse1.env.period = value & 0x0F;
-        break;
+        // -------------------------
+        // Pulse 1 control ($4000)
+        // -------------------------
+        case 0x00:
+            apu.pulse1.duty = (value >> 6) & 0x03;
+            apu.pulse1.env.loop = (value & 0x20) != 0;
+            apu.pulse1.env.constant = (value & 0x10) != 0;
+            apu.pulse1.env.period = value & 0x0F;
 
-    case 0x01:
-        apu.pulse1.sweep.enabled = (value & 0x80) != 0;
-        apu.pulse1.sweep.period  = (value >> 4) & 0x07;
-        apu.pulse1.sweep.negate  = (value & 0x08) != 0;
-        apu.pulse1.sweep.shift   = value & 0x07;
-        apu.pulse1.sweep.reload  = true;
-        break;
 
-    case 0x02:
-        apu.pulse1.timer = (apu.pulse1.timer & 0xFF00) | value;
-        break;
+        // -------------------------
+        // Pulse 1 sweep ($4001)
+        // -------------------------
+        case 0x01:
+            apu.pulse1.sweep.enabled = (value & 0x80) != 0;
+            apu.pulse1.sweep.period = (value >> 4) & 0x07;
+            apu.pulse1.sweep.negate = (value & 0x08) != 0;
+            apu.pulse1.sweep.shift = value & 0x07;
 
-    case 0x03:
-        apu.pulse1.timer = (apu.pulse1.timer & 0x00FF) | (cast<ushort>(value & 0x07) << 8);
-        apu.pulse1.seq_step = 0;
-        apu.pulse1.length_counter = length_table[(value >> 3) & 0x1F];
-        apu.pulse1.env.start = true;
-        break;
+            apu.pulse1.sweep.reload = true;
 
-    // -------------------
-    // PULSE 2 (same pattern)
-    // -------------------
-    case 0x04:
-        apu.pulse2.duty = (value >> 6) & 0x03;
-        apu.pulse2.env.constant = (value & 0x10) != 0;
-        apu.pulse2.env.loop = (value & 0x20) != 0;
-        apu.pulse2.halted = (value & 0x20) != 0;
-        apu.pulse2.env.period = value & 0x0F;
-        break;
 
-    case 0x05:
-        apu.pulse2.sweep.enabled = (value & 0x80) != 0;
-        apu.pulse2.sweep.period  = (value >> 4) & 0x07;
-        apu.pulse2.sweep.negate  = (value & 0x08) != 0;
-        apu.pulse2.sweep.shift   = value & 0x07;
-        apu.pulse2.sweep.reload  = true;
-        break;
+        // -------------------------
+        // Pulse 1 timer low
+        // -------------------------
+        case 0x02:
+            apu.pulse1.reload = (apu.pulse1.reload & 0xFF00) | value;
 
-    case 0x06:
-        apu.pulse2.timer = (apu.pulse2.timer & 0xFF00) | value;
-        break;
 
-    case 0x07:
-        apu.pulse2.timer = (apu.pulse2.timer & 0x00FF) | (cast<ushort>(value & 0x07) << 8);
-        apu.pulse2.seq_step = 0;
-        apu.pulse2.length_counter = length_table[(value >> 3) & 0x1F];
-        apu.pulse2.env.start = true;
-        break;
+        // -------------------------
+        // Pulse 1 timer high + length
+        // -------------------------
+        case 0x03:
+            apu.pulse1.reload = (cast<ushort>(value & 0x07) << 8) | (apu.pulse1.reload & 0x00FF);
+            apu.pulse1.timer = apu.pulse1.reload;
+            apu.pulse1.length_counter.val = length_table[value >> 3];
+            apu.pulse1.env.start = true;
 
-    // -------------------
-    // STATUS ($4015)
-    // -------------------
-    case 0x15:
-        apu.pulse1.enabled = (value & 0x01) != 0;
-        apu.pulse2.enabled = (value & 0x02) != 0;
 
-        // IMPORTANT: writing 0 clears length counters
-        if !apu.pulse1.enabled { apu.pulse1.length_counter = 0; }
-        if !apu.pulse2.enabled { apu.pulse2.length_counter = 0; }
+        // -------------------------
+        // Pulse 2 control
+        // -------------------------
+        case 0x04:
+            apu.pulse2.duty = (value >> 6) & 0x03;
+            apu.pulse2.env.loop = (value & 0x20) != 0;
+            apu.pulse2.env.constant = (value & 0x10) != 0;
+            apu.pulse2.env.period = value & 0x0F;
 
-        break;
+        // -------------------------
+        // Pulse 2 sweep
+        // -------------------------
+        case 0x05:
+            apu.pulse2.sweep.enabled = (value & 0x80) != 0;
+            apu.pulse2.sweep.period = (value >> 4) & 0x07;
+            apu.pulse2.sweep.negate = (value & 0x08) != 0;
+            apu.pulse2.sweep.shift = value & 0x07;
+            apu.pulse2.sweep.reload = true;
 
-    // -------------------
-    // FRAME COUNTER ($4017)
-    // -------------------
-    case 0x17:
-        // mode + irq inhibit
-        apu.frame_irq_inhibit = (value & 0x40) != 0;
-        apu.frame_mode = ((value >> 7) & 1) == 1;
 
-        if apu.frame_mode {
-            // 5-step mode: immediately clock envelopes twice (important quirk)
-            apu.pulse1.env.clock();
-            apu.pulse1.env.clock();
-        }
-        break;
+        case 0x06:
+            apu.pulse2.reload = (apu.pulse2.reload & 0xFF00) | value;
 
-    default:
-        break;
+
+        case 0x07:
+            apu.pulse2.reload = (cast<ushort>(value & 0x07) << 8) | (apu.pulse2.reload & 0x00FF);
+            apu.pulse2.timer = apu.pulse2.reload;
+            apu.pulse2.length_counter.val = length_table[value >> 3];
+            apu.pulse2.env.start = true;
+
+
+        // -------------------------
+        // Triangle ($4008-$400B)
+        // -------------------------
+        case 0x08:
+            apu.triangle.control_flag = (value & 0x80) != 0;
+            apu.triangle.linear_reload = value & 0x7F;
+
+        case 0x0A:
+            apu.triangle.reload = (apu.triangle.reload & 0xFF00) | value;
+
+        case 0x0B:
+            apu.triangle.reload = (cast<ushort>(value & 0x07) << 8) | (apu.triangle.reload & 0xFF);
+            apu.triangle.timer = apu.triangle.reload;
+            apu.triangle.length_counter.val = length_table[value >> 3];
+            apu.triangle.linear_reload_flag = true;
+
+
+        // -------------------------
+        // Noise ($400C-$400F)
+        // -------------------------
+        case 0x0C:
+            apu.noise.env.loop = (value & 0x20) != 0;
+            apu.noise.env.constant = (value & 0x10) != 0;
+            apu.noise.env.period = value & 0x0F;
+
+
+        case 0x0E:
+            apu.noise.mode = (value & 0x80) != 0;
+            apu.noise.reload = noise_period_table[value & 0x0F];
+
+
+        case 0x0F:
+            apu.noise.length_counter.val = length_table[value >> 3];
+            apu.noise.env.start = true;
+
+
+        // -------------------------
+        // DMC ($4010-$4013)
+        // -------------------------
+        case 0x10:
+            apu.dmc.irq_enable = (value & 0x80) != 0;
+            apu.dmc.loop = (value & 0x40) != 0;
+            apu.dmc.reload = dmc_rate_table[value & 0x0F];
+
+            if !apu.dmc.irq_enable { apu.dmc_irq = false; }
+        case 0x11:
+            apu.dmc.output = value & 0x7F;
+
+
+        case 0x12:
+            apu.dmc.sample_address = 0xC000 | (value << 6);
+
+
+        case 0x13:
+            apu.dmc.sample_length = (value << 4) | 1;
+
+
+        // -------------------------
+        // Status ($4015)
+        // -------------------------
+        case 0x15:
+            apu.pulse1.enabled = (value & 0x01) != 0;
+            if !apu.pulse1.enabled {
+                apu.pulse1.length_counter.val = 0;
+            }
+
+
+            apu.pulse2.enabled = (value & 0x02) != 0;
+
+            if !apu.pulse2.enabled {
+                apu.pulse2.length_counter.val = 0;
+            }
+
+
+            apu.triangle.enabled = (value & 0x04) != 0;
+
+            if !apu.triangle.enabled {
+                apu.triangle.length_counter.val = 0;
+            }
+
+
+            apu.noise.enabled = (value & 0x08) != 0;
+
+            if !apu.noise.enabled {
+                apu.noise.length_counter.val = 0;
+            }
+
+
+            apu.dmc.enabled = (value & 0x10) != 0;
+
+
+        // -------------------------
+        // Frame counter ($4017)
+        // -------------------------
+        case 0x17:
+            apu.frame_mode = (value & 0x80) != 0;
+            apu.irq_inhibit = (value & 0x40) != 0;
+
+            if apu.irq_inhibit {
+                apu.frame_irq = false;
+            }
+
+            apu.frame_counter = 0;
     }
-}
-
-fn PulseChannel.clock(p: *PulseChannel) void
-{
-    if !p.enabled {
-        p.output = 0;
-        return;
-    }
-
-    // timer counts down
-    if p.timer == 0 {
-        p.timer = p.reload;
-        p.seq_step = (p.seq_step + 1) & 7;
-    } else {
-        p.timer--;
-    }
-
-    const wave = duty_table[p.duty] & (cast<ubyte>(1) << p.seq_step);
-
-    if wave != 0 {
-        p.output = p.env.volume();
-    } else {
-        p.output = 0;
-    }
-
 }
 
 fn Envelope.volume(env: *const Envelope) ubyte
@@ -365,14 +709,6 @@ fn Envelope.clock(env: *Envelope) void
     }
 }
 
-pub fn PulseChannel.length_counter_clock(channel: *PulseChannel) void
-{
-    if channel.length_counter > 0 && !channel.env.loop
-    {
-        channel.length_counter--;
-    }
-}
-
 fn PulseChannel.sweep_target_period(channel: *PulseChannel, is_pulse1: bool) ushort
 {
     const change = channel.reload >> channel.sweep.shift;
@@ -390,15 +726,32 @@ fn PulseChannel.sweep_target_period(channel: *PulseChannel, is_pulse1: bool) ush
     return channel.reload + change;
 }
 
-pub fn PulseChannel.sweep_clock(channel: *PulseChannel, is_pulse1: bool) void
+fn PulseChannel.sweep_clock(channel: *PulseChannel) void
 {
+    const pulse1 = channel == &apu.pulse1;
+    const change = channel.reload >> channel.sweep.shift;
+
     if channel.sweep.divider == 0
     {
         if channel.sweep.enabled &&
-           channel.sweep.shift != 0 &&
-           !channel.sweep.mute
+           !channel.sweep.mute &&
+           channel.sweep.shift != 0
         {
-            channel.reload = channel.sweep_target_period(is_pulse1);
+            if channel.sweep.negate
+            {
+                if pulse1
+                {
+                    channel.reload -= change + 1;
+                }
+                else
+                {
+                    channel.reload -= change;
+                }
+            }
+            else
+            {
+                channel.reload += change;
+            }
         }
 
         channel.sweep.divider = channel.sweep.period;
@@ -414,15 +767,16 @@ pub fn PulseChannel.sweep_clock(channel: *PulseChannel, is_pulse1: bool) void
         channel.sweep.divider = channel.sweep.period;
     }
 
-    const target = channel.sweep_target_period(is_pulse1);
+    //
+    // Update mute flag
+    //
 
-    channel.sweep.mute =
-        channel.reload < 8 ||
-        target > 0x7FF;
+    channel.sweep.mute = channel.reload < 8 || channel.reload > 0x7FF;
 }
 
-pub fn PulseChannel.timer_clock(channel: *PulseChannel) void
+fn PulseChannel.timer_clock(channel: *PulseChannel) void
 {
+    if !channel.enabled { return; }
     if channel.timer > 0
     {
         channel.timer--;
@@ -431,5 +785,248 @@ pub fn PulseChannel.timer_clock(channel: *PulseChannel) void
     {
         channel.timer = channel.reload;
         channel.seq_step = (channel.seq_step + 1) & 7;
+    }
+}
+
+fn PulseChannel.update_output(channel: *PulseChannel) void
+{
+    if !channel.enabled
+    {
+        channel.output = 0;
+        return;
+    }
+
+    if channel.length_counter.val == 0
+    {
+        channel.output = 0;
+        return;
+    }
+
+    if channel.sweep.mute
+    {
+        channel.output = 0;
+        return;
+    }
+
+    // Duty sequence bit
+    const sequence = duty_table[channel.duty];
+
+    if (sequence & (cast<ushort>(1) << channel.seq_step)) == 0
+    {
+        channel.output = 0;
+        return;
+    }
+
+    channel.output = channel.env.volume();
+}
+
+fn TriangleChannel.timer_clock(channel: *TriangleChannel) void
+{
+    if channel.timer == 0
+    {
+        channel.timer = channel.reload;
+
+        if channel.length_counter.val > 0 &&
+           channel.linear_counter > 0
+        {
+            channel.seq_step = (channel.seq_step + 1) & 31;
+        }
+    }
+    else
+    {
+        channel.timer--;
+    }
+}
+
+fn TriangleChannel.update_output(channel: *TriangleChannel) void
+{
+    if !channel.enabled
+    {
+        channel.output = 0;
+        return;
+    }
+
+    if channel.length_counter.val == 0
+    {
+        channel.output = 0;
+        return;
+    }
+
+    if channel.linear_counter == 0
+    {
+        channel.output = 0;
+        return;
+    }
+
+
+    channel.output = triangle_table[channel.seq_step];
+}
+
+fn NoiseChannel.timer_clock(channel: *NoiseChannel) void
+{
+    if channel.timer == 0
+    {
+        channel.timer = channel.reload;
+
+
+        const feedback: ushort = 
+        if channel.mode 
+            => (channel.shift_register & 1) ^ ((channel.shift_register >> 6) & 1)
+        else
+            => (channel.shift_register & 1) ^ ((channel.shift_register >> 1) & 1);
+
+
+        channel.shift_register >>= 1;
+        channel.shift_register |= feedback << 14;
+    }
+    else
+    {
+        channel.timer--;
+    }
+}
+
+fn NoiseChannel.update_output(channel: *NoiseChannel) void
+{
+    if !channel.enabled
+    {
+        channel.output = 0;
+        return;
+    }
+
+    if channel.length_counter.val == 0
+    {
+        channel.output = 0;
+        return;
+    }
+
+    // If bit 0 is set, noise output is silent
+    if (channel.shift_register & 0x01) != 0
+    {
+        channel.output = 0;
+        return;
+    }
+
+
+    channel.output = channel.env.volume();
+}
+
+fn DMCChannel.timer_clock(channel: *DMCChannel) void
+{
+    if channel.sample_buffer_empty && channel.bytes_remaining > 0
+    {
+        channel.fetch_sample_byte();
+    }
+
+    if channel.timer == 0
+    {
+        channel.timer = channel.reload;
+
+        if !channel.silence
+        {
+            if (channel.shift_register & 1) == 1
+            {
+                if channel.output <= 125
+                {
+                    channel.output += 2;
+                }
+            }
+            else
+            {
+                if channel.output >= 2
+                {
+                    channel.output -= 2;
+                }
+            }
+        }
+
+        channel.shift_register >>= 1;
+
+        channel.bits_remaining--;
+
+        if channel.bits_remaining == 0
+        {
+            channel.bits_remaining = 8;
+
+            if channel.sample_buffer_empty
+            {
+                channel.silence = true;
+            }
+            else
+            {
+                channel.silence = false;
+                channel.shift_register = channel.sample_buffer;
+                channel.sample_buffer_empty = true;
+            }
+        }
+    }
+    else
+    {
+        channel.timer--;
+    }
+}
+
+fn DMCChannel.update_output(channel: *DMCChannel) void
+{
+    if !channel.enabled
+    {
+        channel.output = 0;
+        return;
+    }
+
+    // output is already the DAC value
+}
+
+fn LengthCounter.clock(counter: *LengthCounter, halt: bool) void
+{
+    if !halt && counter.val > 0
+    {
+        counter.val--;
+    }
+}
+
+fn TriangleChannel.linear_clock(channel: *TriangleChannel) void
+{
+    if channel.linear_reload_flag
+    {
+        channel.linear_counter = channel.linear_reload;
+    }
+    else if channel.linear_counter > 0
+    {
+        channel.linear_counter--;
+    }
+
+
+    if !channel.control_flag
+    {
+        channel.linear_reload_flag = false;
+    }
+}
+
+fn DMCChannel.fetch_sample_byte(channel: *DMCChannel) void
+{
+    channel.sample_buffer = bus::read(channel.current_address);
+    cpu::stall(4);
+    channel.sample_buffer_empty = false;
+
+    channel.current_address++;
+
+    if channel.current_address == 0
+    {
+        channel.current_address = 0x8000;
+    }
+
+    channel.bytes_remaining--;
+
+    if channel.bytes_remaining == 0
+    {
+        if channel.loop
+        {
+            channel.current_address = channel.sample_address;
+            channel.bytes_remaining = channel.sample_length;
+        }
+        else if channel.irq_enable
+        {
+            apu.dmc_irq = true;
+        }
     }
 }

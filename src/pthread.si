@@ -1,0 +1,32 @@
+pub union Mutex
+{
+    __data: __mutex_s,
+    __size: [40]char,
+    __align: long,
+}
+
+pub struct __mutex_s
+{
+    __lock: int,
+    __count: uint,
+    __owner: int,
+    __nusers: uint,
+    __kind: int,
+    __spins: short,
+    __glibc_reserved: short,
+    __list: __internal_list,
+}
+
+pub struct __internal_list
+{
+  __prev: ?*__internal_list,
+  __next: ?*__internal_list,
+}
+
+
+@link_name("pthread_mutex_lock")
+pub extern fn Mutex.lock(mutex: *Mutex) int;
+@link_name("pthread_mutex_unlock")
+pub extern fn Mutex.unlock(mutex: *Mutex) int;
+@link_name("pthread_mutex_destroy")
+pub extern fn Mutex.destroy(mutex: *Mutex) int;

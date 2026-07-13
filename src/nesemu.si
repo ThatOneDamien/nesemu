@@ -6,6 +6,8 @@ pub mod io;
 pub mod bus;
 pub mod cart;
 pub mod renderer;
+pub mod audio;
+pub mod pthread;
 
 import cart::NesCart;
 
@@ -40,7 +42,7 @@ pub var context = EmuContext {
 pub #const WINDOW_W: uint = 256;
 pub #const WINDOW_H: uint = 240;
 pub #const WINDOW_SCALE: uint = 3;
-#const NS_PER_FRAME: double = 16666666.6666666666666;
+#const NS_PER_FRAME: ulong = 16589269;
 
 pub struct EmuContext
 {
@@ -51,6 +53,7 @@ pub struct EmuContext
     ram: [0x800]ubyte,
     cart: ?NesCart,
     renderer: renderer::Renderer,
+    audio_player: audio::Player,
     window: ?*sdl::Window,
     running: bool,
 }
@@ -67,6 +70,13 @@ fn main(args: []CString) int
         io::printf("Usage: %s [ROM path]\n", args[0]);
         return 0;
     }
+
+    if(!sdl::Init(.INIT_VIDEO | .INIT_AUDIO))
+	{
+		io::printf("Failed to initialize SDL: %s", sdl::GetError());
+		return 1;
+	}
+    
     if(!create_window()) {
         return 1;
     }
@@ -74,7 +84,10 @@ fn main(args: []CString) int
     context.cart = NesCart.from_file(args[1]);
     if context.cart == null { return 1; }
 
-    renderer::init(context.window!);
+    if !renderer::init(context.window!) || !audio::init(44100) {
+        return 1;
+    }
+    
     power_on();
 
     context.running = true;
@@ -88,25 +101,36 @@ fn main(args: []CString) int
     while context.running {
         bus::clock();
         if context.ppu.frame_ready {
+            process_events();
+            set_controller_state();
+            renderer::present_frame();
+            context.ppu.frame_ready = false;
             const next_frame = sdl::GetPerformanceCounter();
-            if ((next_frame - prev_fps_calc) / freq) >= 1 {
-                io::printf("FPS: %u\n", frames);
-                prev_fps_calc = next_frame;
-                frames = 0;
-            }
             const delta = (next_frame - prev_frame) / freq_ns;
             if delta < NS_PER_FRAME {
-                sdl::DelayNS(cast<ulong>(NS_PER_FRAME - delta));
+                sdl::DelayNS(NS_PER_FRAME - cast<ulong>(delta));
                 prev_frame = sdl::GetPerformanceCounter();
             } else {
                 prev_frame = next_frame;
             }
             frames++;
-            process_events();
-            set_controller_state();
-            renderer::present_frame();
-            context.ppu.frame_ready = false;
         }
+        const next_frame = sdl::GetPerformanceCounter();
+        if ((next_frame - prev_fps_calc) / freq) >= 1 {
+            io::printf("FPS: %3u  CPU_HZ: %7lu PPU_HZ: %7lu APU_HZ: %7lu SAMPLES: %5lu\n", 
+                    frames, 
+                    context.cpu.debug_cycles, 
+                    context.ppu.debug_cycles, 
+                    context.apu.debug_cycles,
+                    context.apu.debug_samples);
+            context.cpu.debug_cycles = 0;
+            context.ppu.debug_cycles = 0;
+            context.apu.debug_cycles = 0;
+            context.apu.debug_samples = 0;
+            prev_fps_calc = next_frame;
+            frames = 0;
+        }
+
     }
 
     sdl::DestroyWindow(context.window!);
@@ -119,16 +143,11 @@ fn power_on() void
     bus::power();
     cpu::power();
     ppu::power();
+    apu::power();
 }
 
 fn create_window() bool 
 {
-    if(!sdl::Init(sdl::INIT_VIDEO))
-	{
-		io::printf("Failed to initialize SDL: %s", sdl::GetError());
-		return false;
-	}
-    
     context.window = sdl::CreateWindow("Nes Emulator", cast<int>(WINDOW_W * WINDOW_SCALE), cast<int>(WINDOW_H * WINDOW_SCALE), 0);
     if (context.window == null) {
         io::printf("CreateWindow failed: %s\n", sdl::GetError());

@@ -15,15 +15,19 @@ struct Instr
 
 pub struct CPU
 {
+    debug_cycles: ulong,
+
     a: ubyte,
     x: ubyte,
     y: ubyte,
     sp: ubyte,
     pc: ushort,
     status: StatusReg,
-    current_cycles: ubyte,
+    current_cycles: ulong,
     total_cycles: ulong,
+
     nmi_pending: bool,
+    halted: bool,
 }
 
 pub struct StatusReg
@@ -63,6 +67,7 @@ pub fn power() void
     cpu.total_cycles = 7;
     cpu.current_cycles = 0;
     cpu.nmi_pending = false;
+    cpu.halted = false;
 }
 
 pub fn reset() void
@@ -78,20 +83,52 @@ pub fn reset() void
 
 pub fn clock() void
 {
+    cpu.debug_cycles++;
+    if cpu.halted { return; }
     if cpu.current_cycles == 0 {
-        const opcode = bus::read(cpu.pc);
-        const instr = &opcodes[opcode];
+        if cpu.nmi_pending {
+            nmi();
+            cpu.nmi_pending = false;
+        }
+        else if irq_requested() {
+            irq();
+        }
+        else {
+            const opcode = bus::read(cpu.pc);
+            const instr = &opcodes[opcode];
 
-        // print_state(opcode, instr);
+            // print_state(opcode, instr);
 
-        cpu.pc++;
-        cpu.current_cycles = instr.cycles;
-        var operand = resolve_operand(instr.addr_mode);
-        dispatch_instruction(instr, &operand);
+            cpu.pc++;
+            cpu.current_cycles = instr.cycles;
+            var operand = resolve_operand(instr.addr_mode);
+            dispatch_instruction(instr, &operand);
+        }
     }
     cpu.current_cycles--;
     cpu.total_cycles++;
 }
+
+pub fn stall(cycles: ulong) void
+{
+    cpu.current_cycles += cycles;
+}
+
+fn irq_requested() bool
+{
+    if context.apu.frame_irq
+    {
+        io::printf("APU FRAME IRQ\n");
+    }
+
+    if context.apu.dmc_irq
+    {
+        io::printf("DMC IRQ\n");
+    }
+
+    return !cpu.status.i && (context.apu.frame_irq || context.apu.dmc_irq);
+}
+
 
 fn print_state(opcode: ubyte, instr: *const Instr) void
 {
@@ -130,16 +167,16 @@ fn print_state(opcode: ubyte, instr: *const Instr) void
 
 pub fn irq() void
 {
-	if !cpu.status.i
-	{
-        stack_push16(cpu.pc);
-        stack_push(get_status(false));
+    stack_push16(cpu.pc);
+    stack_push(get_status(false));
 
-		// Read new program counter location from fixed address
-		cpu.pc = bus::read16(0xFFFE);
-		// IRQs take time
-		cpu.current_cycles = 7;
-	}
+    // disable interrupts
+    cpu.status.i = true;
+
+    // Read new program counter location from fixed address
+    cpu.pc = bus::read16(0xFFFE);
+    // IRQs take time
+    cpu.current_cycles = 8;
 }
 
 pub fn nmi() void
@@ -153,7 +190,7 @@ pub fn nmi() void
 
     // jump to NMI vector
     cpu.pc = bus::read16(0xFFFA);
-    cpu.current_cycles = 8;
+    cpu.current_cycles = 7;
 }
 
 fn resolve_operand(mode: AddrMode) Operand
@@ -488,8 +525,11 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         const val = cpu.a & cpu.x;
         bus::write(operand.addr, val);
     case .SHX:
+        const val = cpu.x & (cast<ubyte>(operand.addr >> 8) + 1);
+        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (val << 8) else => operand.addr, val);
     case .SHY:
-        todo(null);
+        const val = cpu.y & (cast<ubyte>(operand.addr >> 8) + 1);
+        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (val << 8) else => operand.addr, val);
     case .SLO:
         var val = operand.load_value();
         cpu.status.c = (val & 0x80) != 0;
@@ -509,10 +549,16 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.a ^= val;
         set_nz(cpu.a);
     case .TAS:
+        cpu.sp = cpu.a & cpu.x;
+        bus::write(operand.addr, cpu.sp & (cast<ubyte>(operand.addr >> 8) + 1));
     case .XAA:
+        cpu.a = cpu.a & cpu.x & operand.load_value();
+        set_nz(cpu.a);
     case .AHX:
+        const val = cpu.a & cpu.x & (cast<ubyte>(operand.addr >> 8) + 1);
+        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (val << 8) else => operand.addr, val);
     case .STP:
-        todo("Instruction not implemented");
+        cpu.halted = true;
     }
     if operand.page_crossed && instr.page_cross_penalty {
         cpu.current_cycles++;

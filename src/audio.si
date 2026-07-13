@@ -1,0 +1,86 @@
+import context;
+import sdl;
+import io;
+import bus;
+import apu;
+import pthread;
+
+pub struct Player
+{
+    stream: ?*sdl::AudioStream,
+    buffer: AudioBuffer,
+    sample_rate: int,
+}
+
+pub struct AudioBuffer
+{
+    mutex: pthread::Mutex,
+    samples: [2048]float,
+    count: usize,
+    head: usize,
+}
+
+#const player: *Player = &context.audio_player;
+
+pub fn init(sample_rate: int) bool
+{
+    player.sample_rate = sample_rate;
+    const spec = sdl::AudioSpec{
+        format: sdl::AudioFormat.F32,
+        channels: 1,
+        freq: sample_rate,
+    };
+
+    player.stream = sdl::OpenAudioDeviceStream(sdl::AUDIO_DEVICE_DEFAULT_PLAYBACK, &spec, &audio_callback, null);
+    if player.stream == null 
+    { 
+        io::printf("Failed to open audio device: %s\n", sdl::GetError());
+        sdl::Quit();
+        return false;
+    }
+
+    sdl::ResumeAudioStreamDevice(player.stream!);
+    return true;
+}
+
+var null_buf: [1024]float;
+
+fn audio_callback (_userdata: *void, stream: *sdl::AudioStream, additional_amount: int, total_amount: int) void
+{
+    // player.buffer.mutex.lock();
+    // var samples_needed = cast<usize>(additional_amount) / #sizeof(float);
+    // const have = player.buffer.count;
+    // const head = player.buffer.head;
+    // io::printf("NEED: %d HAVE: %d\n", samples_needed, have);
+    // if samples_needed > have {
+    //     sdl::PutAudioStreamData(stream, &null_buf, cast<int>(samples_needed - have) * #sizeof(float));
+    //     samples_needed = have;
+    // }
+    // player.buffer.count -= samples_needed;
+    // if samples_needed > head && head != 0 {
+    //     sdl::PutAudioStreamData(stream, &player.buffer.samples, cast<int>(head) * #sizeof(float));
+    //     samples_needed -= head;
+    // }
+    // if samples_needed > 0 {
+    //     sdl::PutAudioStreamData(stream, &player.buffer.samples[player.buffer.samples.len - samples_needed], cast<int>(samples_needed) * #sizeof(float));
+    // }
+    // player.buffer.mutex.unlock();
+}
+
+pub fn push_sample(sample: float) void
+{
+    player.buffer.push(sample);
+}
+
+pub fn AudioBuffer.push(buffer: *AudioBuffer, sample: float) void
+{
+    buffer.mutex.lock();
+    if buffer.count < buffer.samples.len
+    {
+        buffer.samples[buffer.head] = sample;
+        buffer.count++;
+        buffer.head = (buffer.head + 1) % buffer.samples.len;
+    }
+    buffer.mutex.unlock();
+}
+

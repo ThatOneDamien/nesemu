@@ -12,4 +12,4 @@ clean:
 
 $(BUILD_DIR)/nes: $(SRCS)
 	@mkdir -p $(BUILD_DIR)
-	@./sicdb $(SRC_DIR)/nesemu.si --out-dir $(BUILD_DIR) --emit link,ir --link "`pkg-config --libs sdl3`"
+	@./sicdb $(SRC_DIR)/nesemu.si --out-dir $(BUILD_DIR) --emit link,ir --link "`pkg-config --libs sdl3`" --link "-lm" --link "-lpthread"
