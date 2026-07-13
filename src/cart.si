@@ -267,7 +267,7 @@ pub fn mmc1_cpu_write(addr: ushort, value: ubyte) void
 fn mmc1_ppu_read(addr: ushort) ubyte
 {
     if addr >= 0x2000 {
-        return 0;
+        return context.ppu.open_bus;
     }
 
     const data: *MMC1Data = &context.cart!.data.mmc1;

@@ -43,15 +43,9 @@ pub struct StatusReg
 struct Operand
 {
     addr: ushort,
-    value: ?ubyte,
+    dummy_addr: ushort,
     page_crossed: bool,
-}
-
-fn Operand.load_value(op: *Operand) ubyte 
-{
-    if op.value != null { return op.value!; }
-    op.value = bus::read(op.addr);
-    return op.value!;
+    addr_mode: AddrMode,
 }
 
 pub fn power() void
@@ -116,16 +110,6 @@ pub fn stall(cycles: ulong) void
 
 fn irq_requested() bool
 {
-    if context.apu.frame_irq
-    {
-        io::printf("APU FRAME IRQ\n");
-    }
-
-    if context.apu.dmc_irq
-    {
-        io::printf("DMC IRQ\n");
-    }
-
     return !cpu.status.i && (context.apu.frame_irq || context.apu.dmc_irq);
 }
 
@@ -196,13 +180,13 @@ pub fn nmi() void
 fn resolve_operand(mode: AddrMode) Operand
 {
     var operand = Operand{}; 
+    operand.addr_mode = mode;
     switch mode {
-    case .Implied: break;
+    case .Implied:
     case .Accumulator:
-        operand.value = cpu.a;
+        break;
     case .Immediate:
         operand.addr = cpu.pc;
-        operand.value = bus::read(cpu.pc);
         cpu.pc++;
     case .ZeroPage:
         operand.addr = bus::read(cpu.pc);
@@ -220,11 +204,13 @@ fn resolve_operand(mode: AddrMode) Operand
         const base = bus::read16(cpu.pc);
         operand.addr = base + cpu.x;
         operand.page_crossed = did_cross_page(base, operand.addr);
+        operand.dummy_addr = (base & 0xFF00) | (operand.addr & 0x00FF);
         cpu.pc += 2;
     case .AbsoluteY:
         const base = bus::read16(cpu.pc);
         operand.addr = base + cpu.y;
         operand.page_crossed = did_cross_page(base, operand.addr);
+        operand.dummy_addr = (base & 0xFF00) | (operand.addr & 0x00FF);
         cpu.pc += 2;
     case .Relative:
         const offset = cast<byte>(bus::read(cpu.pc));
@@ -247,19 +233,20 @@ fn resolve_operand(mode: AddrMode) Operand
 
         operand.addr = (cast<ushort>(hi) << 8) | lo;
     case .IndirectX:
-        const base = bus::read(cpu.pc) + cpu.x;
+        const indir = bus::read(cpu.pc) + cpu.x;
         cpu.pc++;
-        const lo = bus::read(cast<ushort>(base));
-        const hi = bus::read(cast<ushort>(base + 1));
+        const lo = bus::read(cast<ushort>(indir));
+        const hi = bus::read(cast<ushort>(indir + 1));
         operand.addr = (cast<ushort>(hi) << 8) | lo;
     case .IndirectY:
-        const base = bus::read(cpu.pc);
+        const indir = bus::read(cpu.pc);
         cpu.pc++;
-        const lo = bus::read(cast<ushort>(base));
-        const hi = bus::read(cast<ushort>(base + 1));
-        const base_addr = (cast<ushort>(hi) << 8) | lo;
-        operand.addr = base_addr + cpu.y;
-        operand.page_crossed = did_cross_page(base_addr, operand.addr);
+        const lo = bus::read(cast<ushort>(indir));
+        const hi = bus::read(cast<ushort>(indir + 1));
+        const base = (cast<ushort>(hi) << 8) | lo;
+        operand.addr = base + cpu.y;
+        operand.page_crossed = did_cross_page(base, operand.addr);
+        operand.dummy_addr = (base & 0xFF00) | (operand.addr & 0x00FF);
     default:
         io::printf("Bad addressing mode.\n");
     }
@@ -277,7 +264,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case .Invalid:
         io::printf("Bad instruction.");
     case .ADC:
-        const val = operand.load_value();
+        const val = operand.read();
         const result_full: ushort = cast<ushort>(cpu.a) + val + cast<ushort>(cpu.status.c);
         const result = cast<ubyte>(result_full);
         cpu.status.c = result_full > 0xFF;
@@ -285,12 +272,13 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.a = result;
         set_nz(cpu.a);
     case .AND:
-        cpu.a &= operand.load_value();
+        cpu.a &= operand.read();
         set_nz(cpu.a);
     case .ASL:
-        const val = operand.load_value();
+        const val = operand.read();
+        operand.write(val);
         const result = val << 1;
-        set_mem_or_acc(result, operand, instr);
+        operand.write(result);
         cpu.status.c = (val >> 7) != 0;
         set_nz(result);
     case .BCC:
@@ -300,7 +288,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case .BEQ:
         branch_if_cond(cpu.status.z, operand);
     case .BIT:
-        const val = operand.load_value();
+        const val = operand.read();
         const result = cpu.a & val;
         cpu.status.z = result == 0;
         cpu.status.n = (val & (1 << 7)) != 0;
@@ -331,26 +319,28 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case .CLV:
         cpu.status.v = false;
     case .CMP:
-        compare_op(cpu.a, operand.load_value());
+        compare_op(cpu.a, operand.read());
     case .CPX:
-        compare_op(cpu.x, operand.load_value());
+        compare_op(cpu.x, operand.read());
     case .CPY:
-        compare_op(cpu.y, operand.load_value());
+        compare_op(cpu.y, operand.read());
     case .DEC:
-        const result = operand.load_value() - 1;
-        bus::write(operand.addr, result);
-        set_nz(result);
+        const old = operand.read();
+        operand.write(old);
+        operand.write(old - 1);
+        set_nz(old - 1);
     case .DEX:
         set_nz(--cpu.x);
     case .DEY:
         set_nz(--cpu.y);
     case .EOR:
-        cpu.a = cpu.a ^ operand.load_value();
+        cpu.a = cpu.a ^ operand.read();
         set_nz(cpu.a);
     case .INC:
-        const result = operand.load_value() + 1;
-        bus::write(operand.addr, result);
-        set_nz(result);
+        const old = operand.read();
+        operand.write(old);
+        operand.write(old + 1);
+        set_nz(old + 1);
     case .INX:
         set_nz(++cpu.x);
     case .INY:
@@ -361,25 +351,26 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         stack_push16(cpu.pc - 1);
         cpu.pc = operand.addr;
     case .LDA:
-        cpu.a = operand.load_value();
+        cpu.a = operand.read();
         set_nz(cpu.a);
     case .LDX:
-        cpu.x = operand.load_value();
+        cpu.x = operand.read();
         set_nz(cpu.x);
     case .LDY:
-        cpu.y = operand.load_value();
+        cpu.y = operand.read();
         set_nz(cpu.y);
     case .LSR:
-        const val = operand.load_value();
+        const val = operand.read();
+        operand.write(val);
         const result = val >> 1;
-        set_mem_or_acc(result, operand, instr);
+        operand.write(result);
         cpu.status.c = (val & 1) != 0;
         cpu.status.n = false;
         cpu.status.z = result == 0;
     case .NOP:
-        break;
+        operand.read();
     case .ORA:
-        cpu.a |= operand.load_value();
+        cpu.a |= operand.read();
         set_nz(cpu.a);
     case .PHA:
         stack_push(cpu.a);
@@ -391,15 +382,17 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case .PLP:
         pop_status();
     case .ROL:
-        const val = operand.load_value();
+        const val = operand.read();
+        operand.write(val);
         const result = (val << 1) | cast<ubyte>(cpu.status.c);
-        set_mem_or_acc(result, operand, instr);
+        operand.write(result);
         cpu.status.c = (val & 0x80) != 0;
         set_nz(result);
     case .ROR:
-        const val = operand.load_value();
+        const val = operand.read();
+        operand.write(val);
         const result = (val >> 1) | (cast<ubyte>(cpu.status.c) << 7);
-        set_mem_or_acc(result, operand, instr);
+        operand.write(result);
         cpu.status.c = (val & 0x1) != 0;
         set_nz(result);
     case .RTI:
@@ -408,7 +401,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case .RTS:
         cpu.pc = stack_pop16() + 1;
     case .SBC:
-        const not_val = ~operand.load_value();
+        const not_val = ~operand.read();
         const result_full: ushort = cast<ushort>(cpu.a) + not_val + cast<ushort>(cpu.status.c);
         const result = cast<ubyte>(result_full);
         cpu.status.c = result_full > 0xFF;
@@ -422,11 +415,11 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
     case .SEI:
         cpu.status.i = true;
     case .STA:
-        bus::write(operand.addr, cpu.a);
+        operand.write(cpu.a);
     case .STX:
-        bus::write(operand.addr, cpu.x);
+        operand.write(cpu.x);
     case .STY:
-        bus::write(operand.addr, cpu.y);
+        operand.write(cpu.y);
     case .TAX:
         cpu.x = cpu.a;
         set_nz(cpu.x);
@@ -445,16 +438,16 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.a = cpu.y;
         set_nz(cpu.a);
     case .ALR:
-        cpu.a &= operand.load_value();
+        cpu.a &= operand.read();
         cpu.status.c = (cpu.a & 1) != 0;
         cpu.a >>= 1;
         set_nz(cpu.a);
     case .ANC:
-        cpu.a &= operand.load_value();
+        cpu.a &= operand.read();
         set_nz(cpu.a);
         cpu.status.c = cpu.status.n;
     case .ARR:
-        var val = cpu.a & operand.load_value();
+        var val = cpu.a & operand.read();
 
         val = (val >> 1) | (cast<ubyte>(cpu.status.c) << 7);
 
@@ -466,17 +459,17 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.status.v = (((cpu.a >> 6) ^ (cpu.a >> 5)) & 1) == 1;
     case .AXS:
         const lhs = cpu.a & cpu.x;
-        const rhs = operand.load_value();
+        const rhs = operand.read();
         const result = lhs - rhs;
         cpu.status.c = lhs >= rhs;
         cpu.x = result;
         set_nz(cpu.x);
     case .DCP:
-        const val = operand.load_value() - 1;
+        const val = operand.read() - 1;
         bus::write(operand.addr, val);
         compare_op(cpu.a, val);
     case .ISB:
-        const val = operand.load_value() + 1;
+        const val = operand.read() + 1;
         bus::write(operand.addr, val);
 
         const not_val = ~val;
@@ -487,7 +480,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.a = result;
         set_nz(cpu.a);
     case .LAS:
-        const val = operand.load_value() & cpu.sp;
+        const val = operand.read() & cpu.sp;
 
         cpu.a = val;
         cpu.x = val;
@@ -495,12 +488,12 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
 
         set_nz(val);
     case .LAX:
-        const val = operand.load_value();
+        const val = operand.read();
         cpu.a = val;
         cpu.x = val;
         set_nz(val);
     case .RLA:
-        var val = operand.load_value();
+        var val = operand.read();
 
         const new_c = (val & 0x80) != 0;
         val = (val << 1) | cast<ubyte>(cpu.status.c);
@@ -511,9 +504,9 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.a &= val;
         set_nz(cpu.a);
     case .RRA:
-        const val = operand.load_value();
+        const val = operand.read();
         const result = (val >> 1) | (cast<ubyte>(cpu.status.c) << 7);
-        set_mem_or_acc(result, operand, instr);
+        operand.write(result);
         const carry = val & 0x1;
         const adc_full: ushort = cast<ushort>(cpu.a) + result + carry;
         const adc = cast<ubyte>(adc_full);
@@ -526,12 +519,12 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         bus::write(operand.addr, val);
     case .SHX:
         const val = cpu.x & (cast<ubyte>(operand.addr >> 8) + 1);
-        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (val << 8) else => operand.addr, val);
+        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (cast<ushort>(val) << 8) else => operand.addr, val);
     case .SHY:
         const val = cpu.y & (cast<ubyte>(operand.addr >> 8) + 1);
-        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (val << 8) else => operand.addr, val);
+        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (cast<ushort>(val) << 8) else => operand.addr, val);
     case .SLO:
-        var val = operand.load_value();
+        var val = operand.read();
         cpu.status.c = (val & 0x80) != 0;
 
         val = val << 1;
@@ -540,7 +533,7 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.a |= val;
         set_nz(cpu.a);
     case .SRE:
-        var val = operand.load_value();
+        var val = operand.read();
         cpu.status.c = (val & 0x01) != 0;
 
         val = val >> 1;
@@ -552,11 +545,11 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
         cpu.sp = cpu.a & cpu.x;
         bus::write(operand.addr, cpu.sp & (cast<ubyte>(operand.addr >> 8) + 1));
     case .XAA:
-        cpu.a = cpu.a & cpu.x & operand.load_value();
+        cpu.a = cpu.a & cpu.x & operand.read();
         set_nz(cpu.a);
     case .AHX:
         const val = cpu.a & cpu.x & (cast<ubyte>(operand.addr >> 8) + 1);
-        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (val << 8) else => operand.addr, val);
+        bus::write(if operand.page_crossed => (operand.addr & 0x00FF) | (cast<ushort>(val) << 8) else => operand.addr, val);
     case .STP:
         cpu.halted = true;
     }
@@ -566,14 +559,26 @@ fn dispatch_instruction(instr: *const Instr, operand: *Operand) void
 
 }
 
-fn set_mem_or_acc(value: ubyte, operand: *const Operand, instr: *const Instr) void
+fn Operand.read(op: *const Operand) ubyte
 {
-    if instr.addr_mode == AddrMode.Accumulator {
-        cpu.a = value;
-    } else {
-        bus::write(operand.addr, value);
+    if op.addr_mode == AddrMode.Accumulator {
+        return cpu.a;
+    }
+    else if op.page_crossed {
+        bus::read(op.dummy_addr);
     }
 
+    return bus::read(op.addr);
+}
+
+fn Operand.write(op: *const Operand, value: ubyte) void
+{
+    if op.addr_mode == AddrMode.Accumulator {
+        cpu.a = value;
+    } else {
+        bus::read(op.dummy_addr);
+        bus::write(op.addr, value);
+    }
 }
 
 fn branch_if_cond(cond: bool, operand: *const Operand) void

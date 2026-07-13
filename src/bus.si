@@ -85,10 +85,9 @@ pub fn clock() void
 }
 
 
-@nodiscard
 pub fn read(addr: ushort) ubyte
 {
-    var value: ubyte = void;
+    var value: ubyte = bus.open_bus;
     if !context.cart!.mapper.cpu_read(addr, &value) {
         value = 
         // 2KB RAM mirrored
@@ -113,10 +112,11 @@ pub fn read(addr: ushort) ubyte
     return value;
 }
 
-@nodiscard
 pub fn read16(addr: ushort) ushort
 {
-    return (cast<ushort>(read(addr + 1)) << 8) | read(addr);
+    const lo = read(addr);
+    const hi = read(addr + 1);
+    return (cast<ushort>(hi) << 8) | lo;
 }
 
 pub fn write(addr: ushort, value: ubyte) void

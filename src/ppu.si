@@ -49,6 +49,8 @@ pub struct PPU
 
     odd_frame: bool,
     vblank_suppressed: bool,
+    open_bus: ubyte,
+    open_bus_timestamp: ulong,
 }
 
 pub #const oam_ptr: *[256]ubyte = cast<*[256]ubyte>(&context.ppu.oam);
@@ -458,21 +460,15 @@ pub fn clock() void
 
 }
 
-
 @nodiscard
 pub fn read_register(reg: ushort) ubyte
 {
+    var value: ubyte = void;
     switch cast<PPURegister>(reg) {
-    case .CTRL:
-        io::printf("Attempted to read write-only PPUCTRL.\n");
-        return 0;
-    case .MASK:
-        io::printf("Attempted to read write-only PPUMASK.\n");
-        return 0;
     case .STATUS:
         ppu.w = false;
         // clear vblank flag
-        var value: ubyte = (ppu.status & 0xE0) | (context.bus.open_bus & 0x1F); 
+        value = (ppu.status & 0xE0) | (open_bus_read() & 0x1F); 
         if ppu.scanline == .VBlankStart {
             if ppu.cycle == 1 {
                 ppu.vblank_suppressed = true;
@@ -483,37 +479,37 @@ pub fn read_register(reg: ushort) ubyte
             }
         }
         ppu.status &= 0x7F;
-        return value;
-    case .OAM_ADDR:
-        io::printf("Attempted to read write-only OAMADDR.\n");
-        return 0;
     case .OAM_DATA:
-        return oam_ptr[ppu.oam_addr];
-    case .SCROLL:
-        io::printf("Attempted to read write-only PPUSCROLL.\n");
-        return 0;
-    case .ADDR:
-        io::printf("Attempted to read write-only PPUADDR.\n");
-        return 0;
+        value = oam_ptr[ppu.oam_addr];
     case .DATA:
-        var value = ppu.data_buffer;
+        value = ppu.data_buffer;
 
         ppu.data_buffer = read(ppu.v);
-        if ppu.v >= 0x3F00 { value = ppu.data_buffer; }
-        ppu.v += if (ppu.ctrl & 0x4) == 0x4 => 32 else => 1;
-        return value;
+        if ppu.v >= 0x3F00 {
+            value = ppu.data_buffer; 
+            ppu.data_buffer = read(ppu.v & 0x2FFF);
+        }
+        if ppu.scanline <= .VisibleEnd && (ppu.mask & 0x18) != 0 {
+            increment_scroll_x();
+            increment_scroll_y();
+        }
+        else  {
+            ppu.v += if (ppu.ctrl & 0x04) == 0x04 => 32 else => 1;
+        }
     default:
-        io::printf("Bad PPU register read: %hu.\n", reg);
-        return 0;
+        return open_bus_read();
     }
+    open_bus_write(value);
+    return value;
 }
 
 pub fn write_register(addr: ushort, value: ubyte) void
 {
     const reg = addr & 7;
+    open_bus_write(value);
 
     switch cast<PPURegister>(reg) {
-    case PPURegister.CTRL:
+    case .CTRL:
         if (value & 0x80) == 0x80 && (ppu.ctrl & 0x80) == 0 && (ppu.status & 0x80) == 0x80 {
             context.cpu.nmi_pending = true;
         }
@@ -522,16 +518,16 @@ pub fn write_register(addr: ushort, value: ubyte) void
         // update nametable bits in temporary VRAM address
         ppu.t &= ~cast<ushort>(0x0C00);
         ppu.t |= (cast<ushort>(value & 0x03) << 10);
-    case PPURegister.MASK:
+    case .MASK:
         ppu.mask = value;
-    case PPURegister.STATUS:
-        io::printf("Attempted to write read-only PPUSTATUS.\n");
-    case PPURegister.OAM_ADDR:
+    case .STATUS:
+        break;
+    case .OAM_ADDR:
         ppu.oam_addr = value;
-    case PPURegister.OAM_DATA:
+    case .OAM_DATA:
         oam_ptr[ppu.oam_addr] = value;
         ppu.oam_addr += 1;
-    case PPURegister.SCROLL:
+    case .SCROLL:
         if !ppu.w {
             // first write
             // coarse X + fine X
@@ -545,7 +541,7 @@ pub fn write_register(addr: ushort, value: ubyte) void
             ppu.t = (ppu.t & 0x0C1F) | (cast<ushort>(value & 0x7) << 12) | (cast<ushort>(value & 0xF8) << 2);
             ppu.w = false;
         }
-    case PPURegister.ADDR:
+    case .ADDR:
         if !ppu.w {
             // first write = high byte
             ppu.t = (ppu.t & 0x00FF) | (cast<ushort>(value & 0x3F) << 8);
@@ -557,7 +553,7 @@ pub fn write_register(addr: ushort, value: ubyte) void
             ppu.v = ppu.t;
             ppu.w = false;
         }
-    case PPURegister.DATA:
+    case .DATA:
         write(ppu.v & 0x3FFF, value);
         ppu.v += if (ppu.ctrl & 0x4) == 0x4 => 32 else => 1;
     default:
@@ -566,7 +562,7 @@ pub fn write_register(addr: ushort, value: ubyte) void
 }
 
 @nodiscard
-pub fn read(addr: ushort) ubyte
+fn read(addr: ushort) ubyte
 {
     const a = addr & 0x3FFF;
 
@@ -575,11 +571,15 @@ pub fn read(addr: ushort) ubyte
         return context.cart!.mapper.ppu_read(a);
     }
 
-    // Palette RAM mirrors every 32 bytes, and some special mirroring rules later
-    return ppu.palette[palette_mirror(a)];
+    var pal: ubyte = ppu.palette[palette_mirror(a)] & 0x3F;
+    if (ppu.mask & 0x01) != 0 {
+        pal &= 0x30;
+    }
+
+    return (open_bus_read() & 0xC0) | pal;
 }
 
-pub fn write(addr: ushort, value: ubyte) void
+fn write(addr: ushort, value: ubyte) void
 {
     const a = addr & 0x3FFF;
 
@@ -648,12 +648,12 @@ fn increment_scroll_y() void
             }
             else
             {
-                ppu.v += (1 << 5);
+                ppu.v += 0x20;
             }
         }
         else
         {
-            ppu.v += (1 << 12);
+            ppu.v += 0x1000;
         }
     }
     
@@ -686,7 +686,7 @@ fn load_background_shifters() void
 
 fn update_shifters() void
 {
-    if (ppu.mask & 0x08) != 0
+    if (ppu.mask & 0x18) != 0
     {
         // Shifting background tile pattern row
         ppu.bg_shifter_pattern_lo <<= 1;
@@ -697,7 +697,7 @@ fn update_shifters() void
         ppu.bg_shifter_attrib_hi <<= 1;
     }
 
-    if (ppu.mask & 0x10) != 0 && ppu.cycle >= 1 && ppu.cycle < 258
+    if (ppu.mask & 0x18) != 0 && ppu.cycle >= 1 && ppu.cycle < 258
     {
         for i in 0..ppu.sprite_count
         {
@@ -713,4 +713,20 @@ fn update_shifters() void
         }
     }
 
+}
+
+fn open_bus_write(value: ubyte) void
+{
+    ppu.open_bus = value;
+    ppu.open_bus_timestamp = ppu.debug_cycles;
+}
+
+fn open_bus_read() ubyte
+{
+    // Ensures the open bus decays.
+    #const OPEN_BUS_TIMEOUT: ulong = 5369;
+    if ppu.debug_cycles - ppu.open_bus_timestamp > OPEN_BUS_TIMEOUT {
+        ppu.open_bus = 0;
+    }
+    return ppu.open_bus;
 }
