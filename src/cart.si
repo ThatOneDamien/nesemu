@@ -2,7 +2,7 @@ import CString;
 import io;
 import malloc;
 import todo;
-import context;
+import nes;
 
 #const NES_CONSTANT: uint = 0x1A53454E;
 
@@ -119,14 +119,14 @@ fn nrom_cpu_read(addr: ushort, value: *ubyte) bool
 {
     if addr >= 0x8000 {
         var final: ushort = addr - 0x8000;
-        if context.cart!.prg.len == 0x4000 {
+        if nes.cart!.prg.len == 0x4000 {
             final &= 0x3FFF;
         }
-        *value = context.cart!.prg[final];
+        *value = nes.cart!.prg[final];
         return true;
     }
-    else if addr >= 0x6000 && context.cart!.sram != null {
-        *value = context.cart!.sram![addr - 0x6000];
+    else if addr >= 0x6000 && nes.cart!.sram != null {
+        *value = nes.cart!.sram![addr - 0x6000];
         return true;
     }
 
@@ -135,8 +135,8 @@ fn nrom_cpu_read(addr: ushort, value: *ubyte) bool
 
 fn nrom_cpu_write(addr: ushort, value: ubyte) void 
 {
-    if addr >= 0x6000 && addr < 0x8000 && context.cart!.sram != null {
-        context.cart!.sram![addr - 0x6000] = value;
+    if addr >= 0x6000 && addr < 0x8000 && nes.cart!.sram != null {
+        nes.cart!.sram![addr - 0x6000] = value;
         return;
     }
 
@@ -146,12 +146,12 @@ fn nrom_ppu_read(addr: ushort) ubyte
 {
     // CHR ROM/RAM is mapped directly
     if addr < 0x2000 {
-        return context.cart!.chr[addr];
+        return nes.cart!.chr[addr];
     }
 
     // Nametables
-    const mirrored = context.cart!.mapper.mirror_vram_addr(addr);
-    return context.ppu.vram[mirrored];
+    const mirrored = nes.cart!.mapper.mirror_vram_addr(addr);
+    return nes.ppu.vram[mirrored];
 }
 
 fn nrom_ppu_write(_addr: ushort, _value: ubyte) void 
@@ -161,7 +161,7 @@ fn nrom_ppu_write(_addr: ushort, _value: ubyte) void
 fn nrom_mirror_vram_addr(addr: ushort) ushort
 {
     const nt_addr = (addr - 0x2000) & 0x0FFF;
-    const vertical = (context.cart!.header.flags6 & 0x1) == 0x1;
+    const vertical = (nes.cart!.header.flags6 & 0x1) == 0x1;
     if vertical {
         return nt_addr & 0x7FF;
     }
@@ -180,11 +180,11 @@ fn nrom_mirror_vram_addr(addr: ushort) ushort
 
 fn mmc1_cpu_read(addr: ushort, value: *ubyte) bool 
 {
-    const data: *MMC1Data = &context.cart!.data.mmc1;
+    const data: *MMC1Data = &nes.cart!.data.mmc1;
     if addr >= 0x8000 {
 
         var offset: uint = 0;
-        const prg_size = cast<uint>(context.cart!.prg.len);
+        const prg_size = cast<uint>(nes.cart!.prg.len);
 
         switch (data.control >> 2) & 0x03 {
 
@@ -211,14 +211,14 @@ fn mmc1_cpu_read(addr: ushort, value: *ubyte) bool
             }
         }
 
-        *value = context.cart!.prg[offset];
+        *value = nes.cart!.prg[offset];
         return true;
     }
     else if addr >= 0x6000 {
-        if context.cart!.sram!.len == 0 {
+        if nes.cart!.sram!.len == 0 {
             return false;
         }
-        *value = context.cart!.sram![addr - 0x6000];
+        *value = nes.cart!.sram![addr - 0x6000];
         return true;
     }
 
@@ -230,7 +230,7 @@ fn mmc1_cpu_read(addr: ushort, value: *ubyte) bool
 
 pub fn mmc1_cpu_write(addr: ushort, value: ubyte) void 
 {
-    const data: *MMC1Data = &context.cart!.data.mmc1;
+    const data: *MMC1Data = &nes.cart!.data.mmc1;
 
     if (value & 0x80) != 0 {
         data.shift = 0x10;
@@ -267,10 +267,10 @@ pub fn mmc1_cpu_write(addr: ushort, value: ubyte) void
 fn mmc1_ppu_read(addr: ushort) ubyte
 {
     if addr >= 0x2000 {
-        return context.ppu.open_bus;
+        return nes.ppu.open_bus;
     }
 
-    const data: *MMC1Data = &context.cart!.data.mmc1;
+    const data: *MMC1Data = &nes.cart!.data.mmc1;
     var offset: uint;
 
     if (data.control & 0x10) == 0
@@ -289,7 +289,7 @@ fn mmc1_ppu_read(addr: ushort) ubyte
         }
     }
 
-    return context.cart!.chr[offset];
+    return nes.cart!.chr[offset];
 }
 
 fn mmc1_ppu_write(addr: ushort, value: ubyte) void
@@ -299,11 +299,11 @@ fn mmc1_ppu_write(addr: ushort, value: ubyte) void
     }
 
     // CHR ROM is read-only.
-    if context.cart!.header.chr_rom_size != 0 {
+    if nes.cart!.header.chr_rom_size != 0 {
         return;
     }
 
-    const mmc1 = &context.cart!.data.mmc1;
+    const mmc1 = &nes.cart!.data.mmc1;
 
     var offset: ushort;
 
@@ -324,7 +324,7 @@ fn mmc1_ppu_write(addr: ushort, value: ubyte) void
         }
     }
 
-    context.cart!.chr[offset] = value;
+    nes.cart!.chr[offset] = value;
 }
 
 const mappers: [#type_max(MapperKind) - #type_min(MapperKind) + 1]Mapper = [

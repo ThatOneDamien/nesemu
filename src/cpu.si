@@ -2,7 +2,7 @@ import CString;
 import io;
 import bus;
 import todo;
-import context;
+import nes;
 
 struct Instr 
 {
@@ -24,10 +24,10 @@ pub struct CPU
     pc: ushort,
     status: StatusReg,
     current_cycles: ulong,
-    total_cycles: ulong,
 
     nmi_pending: bool,
     halted: bool,
+    addr_line: ushort,
 }
 
 pub struct StatusReg
@@ -58,7 +58,6 @@ pub fn power() void
         i: true,
     };
     cpu.pc = bus::read16(0xFFFC);
-    cpu.total_cycles = 7;
     cpu.current_cycles = 0;
     cpu.nmi_pending = false;
     cpu.halted = false;
@@ -73,7 +72,7 @@ pub fn reset() void
     cpu.nmi_pending = false;
 }
 
-#const cpu = &context.cpu;
+#const cpu = &nes.cpu;
 
 pub fn clock() void
 {
@@ -96,11 +95,14 @@ pub fn clock() void
             cpu.pc++;
             cpu.current_cycles = instr.cycles;
             var operand = resolve_operand(instr.addr_mode);
+            if cpu.nmi_pending {
+                nmi();
+                cpu.nmi_pending = false;
+            }
             dispatch_instruction(instr, &operand);
         }
     }
     cpu.current_cycles--;
-    cpu.total_cycles++;
 }
 
 pub fn stall(cycles: ulong) void
@@ -110,7 +112,7 @@ pub fn stall(cycles: ulong) void
 
 fn irq_requested() bool
 {
-    return !cpu.status.i && (context.apu.frame_irq || context.apu.dmc_irq);
+    return !cpu.status.i && (nes.apu.frame_irq || nes.apu.dmc_irq);
 }
 
 
@@ -144,8 +146,8 @@ fn print_state(opcode: ubyte, instr: *const Instr) void
     io::printf("  %s  A:%.2hhX X:%.2hhX Y:%.2hhX P:%.2hhX SP:%.2hhX PPU:%3hu,%3hu CYC:%lu\n",
                instr_kind_to_str[instr.kind],
                cpu.a, cpu.x, cpu.y, get_status(false), cpu.sp,
-               context.ppu.scanline, context.ppu.cycle % 341,
-               cpu.total_cycles);
+               nes.ppu.scanline, nes.ppu.cycle % 341,
+               cpu.debug_cycles);
 
 }
 

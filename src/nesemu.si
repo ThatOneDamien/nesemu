@@ -15,36 +15,39 @@ pub typedef CString = *[*]const char;
 pub extern fn malloc(size: usize) *void;
 
 pub var context = EmuContext {
-    ppu: ppu::PPU{
-        system_palette: [
-            0xFF626262, 0xFFB21F00, 0xFFC80424, 0xFFB20052,
-            0xFF760073, 0xFF240080, 0xFF000B73, 0xFF002852,
-            0xFF004424, 0xFF005700, 0xFF005C00, 0xFF245300,
-            0xFF763C00, 0xFF000000, 0xFF000000, 0xFF000000,
+    nes: NESConsole {
+        ppu: ppu::PPU{
+            system_palette: [
+                0xFF626262, 0xFFB21F00, 0xFFC80424, 0xFFB20052,
+                0xFF760073, 0xFF240080, 0xFF000B73, 0xFF002852,
+                0xFF004424, 0xFF005700, 0xFF005C00, 0xFF245300,
+                0xFF763C00, 0xFF000000, 0xFF000000, 0xFF000000,
 
-            0xFFABABAB, 0xFFFF570D, 0xFFFF304B, 0xFFFF138A,
-            0xFFD608BC, 0xFF6912D2, 0xFF002EC7, 0xFF00549D,
-            0xFF007B5C, 0xFF009820, 0xFF00A300, 0xFF4B9100,
-            0xFFB07700, 0xFF111111, 0xFF000000, 0xFF000000,
+                0xFFABABAB, 0xFFFF570D, 0xFFFF304B, 0xFFFF138A,
+                0xFFD608BC, 0xFF6912D2, 0xFF002EC7, 0xFF00549D,
+                0xFF007B5C, 0xFF009820, 0xFF00A300, 0xFF4B9100,
+                0xFFB07700, 0xFF111111, 0xFF000000, 0xFF000000,
 
-            0xFFFFFFFF, 0xFFFFAE53, 0xFFFF8590, 0xFFFF65D3,
-            0xFFFF57FF, 0xFFCF5DFF, 0xFF5777FF, 0xFF009EFA,
-            0xFF00C7BD, 0xFF00E77A, 0xFF11F643, 0xFF7EEF26,
-            0xFFF6D52C, 0xFF4B4B4B, 0xFF000000, 0xFF000000,
+                0xFFFFFFFF, 0xFFFFAE53, 0xFFFF8590, 0xFFFF65D3,
+                0xFFFF57FF, 0xFFCF5DFF, 0xFF5777FF, 0xFF009EFA,
+                0xFF00C7BD, 0xFF00E77A, 0xFF11F643, 0xFF7EEF26,
+                0xFFF6D52C, 0xFF4B4B4B, 0xFF000000, 0xFF000000,
 
-            0xFFFFFFFF, 0xFFFFE1B6, 0xFFFFD1CE, 0xFFFFC3E9,
-            0xFFFFBCFF, 0xFFF4BDFF, 0xFFC3C6FF, 0xFF9AD5FF,
-            0xFF7ADFE9, 0xFF6BF3C7, 0xFFB2FFB3, 0xFFCCFFA9,
-            0xFFFBFFFF, 0xFFB8B8B8, 0xFF000000, 0xFF000000,
-        ]
-    },
+                0xFFFFFFFF, 0xFFFFE1B6, 0xFFFFD1CE, 0xFFFFC3E9,
+                0xFFFFBCFF, 0xFFF4BDFF, 0xFFC3C6FF, 0xFF9AD5FF,
+                0xFF7ADFE9, 0xFF6BF3C7, 0xFFB2FFB3, 0xFFCCFFA9,
+                0xFFFBFFFF, 0xFFB8B8B8, 0xFF000000, 0xFF000000,
+            ]
+        },
+    }
 };
 pub #const WINDOW_W: uint = 256;
 pub #const WINDOW_H: uint = 240;
 pub #const WINDOW_SCALE: uint = 3;
+pub #const nes: *NESConsole = &context.nes;
 #const NS_PER_FRAME: ulong = 16589269;
 
-pub struct EmuContext
+pub struct NESConsole
 {
     apu: apu::APU,
     cpu: cpu::CPU,
@@ -52,6 +55,11 @@ pub struct EmuContext
     bus: bus::Bus,
     ram: [0x800]ubyte,
     cart: ?NesCart,
+}
+
+pub struct EmuContext
+{
+    nes: NESConsole,
     renderer: renderer::Renderer,
     audio_player: audio::Player,
     window: ?*sdl::Window,
@@ -81,8 +89,8 @@ fn main(args: []CString) int
         return 1;
     }
 
-    context.cart = NesCart.from_file(args[1]);
-    if context.cart == null { return 1; }
+    nes.cart = NesCart.from_file(args[1]);
+    if nes.cart == null { return 1; }
 
     if !renderer::init(context.window!) || !audio::init(44100) {
         return 1;
@@ -100,11 +108,11 @@ fn main(args: []CString) int
 
     while context.running {
         bus::clock();
-        if context.ppu.frame_ready {
+        if nes.ppu.frame_ready {
             process_events();
             set_controller_state();
             renderer::present_frame();
-            context.ppu.frame_ready = false;
+            nes.ppu.frame_ready = false;
             const next_frame = sdl::GetPerformanceCounter();
             const delta = (next_frame - prev_frame) / freq_ns;
             if delta < NS_PER_FRAME {
@@ -119,14 +127,14 @@ fn main(args: []CString) int
         if ((next_frame - prev_fps_calc) / freq) >= 1 {
             io::printf("FPS: %3u  CPU_HZ: %7lu PPU_HZ: %7lu APU_HZ: %7lu SAMPLES: %5lu\n", 
                     frames, 
-                    context.cpu.debug_cycles, 
-                    context.ppu.debug_cycles, 
-                    context.apu.debug_cycles,
-                    context.apu.debug_samples);
-            context.cpu.debug_cycles = 0;
-            context.ppu.debug_cycles = 0;
-            context.apu.debug_cycles = 0;
-            context.apu.debug_samples = 0;
+                    nes.cpu.debug_cycles, 
+                    nes.ppu.debug_cycles, 
+                    nes.apu.debug_cycles,
+                    nes.apu.debug_samples);
+            nes.cpu.debug_cycles = 0;
+            nes.ppu.debug_cycles = 0;
+            nes.apu.debug_cycles = 0;
+            nes.apu.debug_samples = 0;
             prev_fps_calc = next_frame;
             frames = 0;
         }
@@ -182,5 +190,5 @@ fn set_controller_state() void
     if keys[sdl::Scancode.DOWN]   { new_state |= 1 << 5; }
     if keys[sdl::Scancode.LEFT]   { new_state |= 1 << 6; }
     if keys[sdl::Scancode.RIGHT]  { new_state |= 1 << 7; }
-    context.bus.controllers[0].state = new_state;
+    nes.bus.controllers[0].state = new_state;
 }

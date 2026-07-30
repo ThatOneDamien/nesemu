@@ -2,6 +2,7 @@ import context;
 import io;
 import renderer;
 import bus;
+import nes;
 
 pub struct PPU
 {
@@ -53,7 +54,7 @@ pub struct PPU
     open_bus_timestamp: ulong,
 }
 
-pub #const oam_ptr: *[256]ubyte = cast<*[256]ubyte>(&context.ppu.oam);
+pub #const oam_ptr: *[256]ubyte = cast<*[256]ubyte>(&nes.ppu.oam);
 
 pub struct ObjectAttributeEntry
 {
@@ -86,7 +87,7 @@ pub enum Scanline : ushort
     VBlankEnd = 261,
 }
 
-#const ppu = &context.ppu;
+#const ppu = &nes.ppu;
 
 pub fn power() void
 {
@@ -114,10 +115,10 @@ pub fn clock() void
         {
             // Clear Vblank, sprite 0 hit, and sprite overflow.
             ppu.status &= 0x1F;
-            for i in 0..8 {
-                ppu.sprite_shifter_pattern_lo[i] = 0;
-                ppu.sprite_shifter_pattern_hi[i] = 0;
-            }
+            // for i in 0..8 {
+            //     ppu.sprite_shifter_pattern_lo[i] = 0;
+            //     ppu.sprite_shifter_pattern_hi[i] = 0;
+            // }
         }
 
 		if (ppu.cycle >= 2 && ppu.cycle < 258) || (ppu.cycle >= 321 && ppu.cycle < 338)
@@ -138,11 +139,11 @@ pub fn clock() void
                         io::memset(&ppu.sprite_scanline, 0xFF, #sizeof(#typeof(ppu.sprite_scanline)));
 
                         ppu.sprite_count = 0;
-
-                        for i in 0..8 {
-                            ppu.sprite_shifter_pattern_lo[i] = 0;
-                            ppu.sprite_shifter_pattern_hi[i] = 0;
-                        }
+                        //
+                        // for i in 0..8 {
+                        //     ppu.sprite_shifter_pattern_lo[i] = 0;
+                        //     ppu.sprite_shifter_pattern_hi[i] = 0;
+                        // }
 
                         var oam_entry: ubyte = 0;
 
@@ -322,7 +323,7 @@ pub fn clock() void
             // Enable Vblank, set nmi
             ppu.status |= 0x80;
             if (ppu.ctrl & 0x80) != 0 {
-                context.cpu.nmi_pending = true;
+                nes.cpu.nmi_pending = true;
             }
         }
     }
@@ -475,7 +476,7 @@ pub fn read_register(reg: ushort) ubyte
                 value &= 0x7F;
             }
             else if ppu.cycle == 2 || ppu.cycle == 3 {
-                context.cpu.nmi_pending = false;
+                nes.cpu.nmi_pending = false;
             }
         }
         ppu.status &= 0x7F;
@@ -511,7 +512,7 @@ pub fn write_register(addr: ushort, value: ubyte) void
     switch cast<PPURegister>(reg) {
     case .CTRL:
         if (value & 0x80) == 0x80 && (ppu.ctrl & 0x80) == 0 && (ppu.status & 0x80) == 0x80 {
-            context.cpu.nmi_pending = true;
+            nes.cpu.nmi_pending = true;
         }
         ppu.ctrl = value;
 
@@ -568,7 +569,7 @@ fn read(addr: ushort) ubyte
 
     // Nametables
     if a < 0x3F00 {
-        return context.cart!.mapper.ppu_read(a);
+        return nes.cart!.mapper.ppu_read(a);
     }
 
     var pal: ubyte = ppu.palette[palette_mirror(a)] & 0x3F;
@@ -585,13 +586,13 @@ fn write(addr: ushort, value: ubyte) void
 
     // Pattern tables (CHR ROM/RAM)
     if a < 0x2000 {
-        context.cart!.mapper.ppu_write(addr, value);
+        nes.cart!.mapper.ppu_write(addr, value);
         return;
     }
 
     // Nametables
     if a < 0x3F00 {
-        const mirrored = context.cart!.mapper.mirror_vram_addr(a);
+        const mirrored = nes.cart!.mapper.mirror_vram_addr(a);
         ppu.vram[mirrored] = value;
         return;
     }

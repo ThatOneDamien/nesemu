@@ -1,5 +1,6 @@
 import io;
 import context;
+import nes;
 import audio;
 import sdl;
 import bus;
@@ -123,7 +124,7 @@ pub struct LengthCounter
     val: ubyte,
 }
 
-#const apu: *APU = &context.apu;
+#const apu: *APU = &nes.apu;
 const length_table: [*]ubyte = [
     10, 254, 20,  2, 40,  4, 80,  6,
    160,   8, 60, 10, 14, 12, 26, 14,
@@ -373,11 +374,9 @@ pub fn clock() void
         case 11186:
             quarter_frame();
 
-        case 14915:
+        case 18641:
             quarter_frame();
             half_frame();
-
-        case 18641:
             apu.frame_counter = 0;
         }
     }
@@ -653,7 +652,13 @@ pub fn write(addr: ushort, value: ubyte) void
 
 
             apu.dmc.enabled = (value & 0x10) != 0;
-
+            if !apu.dmc.enabled {
+                apu.dmc.bytes_remaining = 0;
+            }
+            else if apu.dmc.bytes_remaining == 0 {
+                apu.dmc.current_address = apu.dmc.sample_address;
+                apu.dmc.bytes_remaining = apu.dmc.sample_length;
+            }
 
         // -------------------------
         // Frame counter ($4017)
@@ -700,12 +705,12 @@ fn Envelope.clock(env: *Envelope) void
         }
         else
         {
-            env.decay -= 1;
+            env.decay--;
         }
     }
     else
     {
-        env.divider -= 1;
+        env.divider--;
     }
 }
 
@@ -912,9 +917,17 @@ fn NoiseChannel.update_output(channel: *NoiseChannel) void
 
 fn DMCChannel.timer_clock(channel: *DMCChannel) void
 {
+    // io::printf(
+    //     "empty=%d remaining=%d bits=%d timer=%d\n",
+    //     channel.sample_buffer_empty,
+    //     channel.bytes_remaining,
+    //     channel.bits_remaining,
+    //     channel.timer
+    // );
     if channel.sample_buffer_empty && channel.bytes_remaining > 0
     {
-        channel.fetch_sample_byte();
+        nes.bus.dmc_dma_transfer = true;
+        nes.bus.dmc_dma_addr = channel.current_address;
     }
 
     if channel.timer == 0
@@ -1002,29 +1015,29 @@ fn TriangleChannel.linear_clock(channel: *TriangleChannel) void
     }
 }
 
-fn DMCChannel.fetch_sample_byte(channel: *DMCChannel) void
+pub fn dmc_dma_transfer() void
 {
-    channel.sample_buffer = bus::read(channel.current_address);
-    cpu::stall(4);
-    channel.sample_buffer_empty = false;
+    nes.bus.dmc_dma_transfer = false;
+    apu.dmc.sample_buffer = bus::read(apu.dmc.current_address);
+    apu.dmc.sample_buffer_empty = false;
 
-    channel.current_address++;
+    apu.dmc.current_address++;
 
-    if channel.current_address == 0
+    if apu.dmc.current_address == 0
     {
-        channel.current_address = 0x8000;
+        apu.dmc.current_address = 0x8000;
     }
 
-    channel.bytes_remaining--;
+    apu.dmc.bytes_remaining--;
 
-    if channel.bytes_remaining == 0
+    if apu.dmc.bytes_remaining == 0
     {
-        if channel.loop
+        if apu.dmc.loop
         {
-            channel.current_address = channel.sample_address;
-            channel.bytes_remaining = channel.sample_length;
+            apu.dmc.current_address = apu.dmc.sample_address;
+            apu.dmc.bytes_remaining = apu.dmc.sample_length;
         }
-        else if channel.irq_enable
+        else if apu.dmc.irq_enable
         {
             apu.dmc_irq = true;
         }

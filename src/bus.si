@@ -5,17 +5,23 @@ import io;
 import context;
 import todo;
 import sdl;
+import nes;
 
 pub struct Bus
 {
     controllers: [2]Controller,
 
 	system_clock: uint,
-	dma_page: ubyte,
-	dma_addr: ubyte,
-	dma_data: ubyte,
-	dma_dummy: bool,
-	dma_transfer: bool,
+	oam_dma_transfer: bool,
+	oam_dma_dummy: bool,
+	oam_dma_addr: ubyte,
+	oam_dma_data: ubyte,
+	oam_dma_page: ubyte,
+
+    dmc_dma_transfer: bool,
+    dmc_dma_dummy: bool,
+    dmc_dma_addr: ushort,
+    dmc_dma_data: ubyte,
     open_bus: ubyte,
 }
 
@@ -26,16 +32,21 @@ pub struct Controller
     strobe: bool,
 }
 
-#const bus = &context.bus;
+#const bus = &nes.bus;
 
 pub fn power() void
 {
 	bus.system_clock = 0;
-	bus.dma_page = 0x00;
-	bus.dma_addr = 0x00;
-	bus.dma_data = 0x00;
-	bus.dma_dummy = true;
-	bus.dma_transfer = false;
+	bus.oam_dma_transfer = false;
+	bus.oam_dma_dummy = true;
+	bus.oam_dma_addr = 0x00;
+	bus.oam_dma_data = 0x00;
+	bus.oam_dma_page = 0x00;
+
+	bus.dmc_dma_transfer = false;
+	bus.dmc_dma_dummy = true;
+	bus.dmc_dma_addr = 0x0000;
+	bus.dmc_dma_data = 0x00;
 }
 
 pub fn clock() void
@@ -44,34 +55,37 @@ pub fn clock() void
 
     if bus.system_clock % 3 == 0 
     {
-        if bus.dma_transfer 
+        if bus.oam_dma_transfer 
         {
-            if bus.dma_dummy 
+            if bus.oam_dma_dummy 
             {
 				if bus.system_clock % 2 == 1 
                 {
-					bus.dma_dummy = false;
+					bus.oam_dma_dummy = false;
 				}
             }
             else 
             {
 				if (bus.system_clock % 2 == 0)
 				{
-					bus.dma_data = read(cast<ushort>(bus.dma_page) << 8 | bus.dma_addr);
+					bus.oam_dma_data = read(cast<ushort>(bus.oam_dma_page) << 8 | bus.oam_dma_addr);
 				}
 				else
 				{
-					ppu::oam_ptr[bus.dma_addr] = bus.dma_data;
-					bus.dma_addr++;
-					if (bus.dma_addr == 0x00)
+					ppu::oam_ptr[bus.oam_dma_addr] = bus.oam_dma_data;
+					bus.oam_dma_addr++;
+					if (bus.oam_dma_addr == 0x00)
 					{
-						bus.dma_transfer = false;
-						bus.dma_dummy = true;
+						bus.oam_dma_transfer = false;
+						bus.oam_dma_dummy = true;
 					}
 				}
 
             }
             apu::clock();
+        }
+        else if bus.dmc_dma_transfer {
+
         }
         else 
         {
@@ -88,10 +102,10 @@ pub fn clock() void
 pub fn read(addr: ushort) ubyte
 {
     var value: ubyte = bus.open_bus;
-    if !context.cart!.mapper.cpu_read(addr, &value) {
+    if !nes.cart!.mapper.cpu_read(addr, &value) {
         value = 
         // 2KB RAM mirrored
-        if addr < 0x2000 => context.ram[addr & 0x7FF]
+        if addr < 0x2000 => nes.ram[addr & 0x7FF]
         // PPU registers mirrored every 8 bytes 
         else if addr < 0x4000 => ppu::read_register(addr & 0x7)
         else if addr == 0x4015 => apu::read_status()
@@ -125,7 +139,7 @@ pub fn write(addr: ushort, value: ubyte) void
 
     // 2KB RAM mirrored
     if addr < 0x2000 {
-        context.ram[addr & 0x7FF] = value;
+        nes.ram[addr & 0x7FF] = value;
         return;
     }
 
@@ -136,9 +150,9 @@ pub fn write(addr: ushort, value: ubyte) void
     }
 
     if addr == 0x4014 {
-		bus.dma_page = value;
-		bus.dma_addr = 0x00;
-		bus.dma_transfer = true;						
+		bus.oam_dma_page = value;
+		bus.oam_dma_addr = 0x00;
+		bus.oam_dma_transfer = true;						
         return;
     }
 
@@ -163,5 +177,5 @@ pub fn write(addr: ushort, value: ubyte) void
     }
 
 
-    context.cart!.mapper.cpu_write(addr, value);
+    nes.cart!.mapper.cpu_write(addr, value);
 }
